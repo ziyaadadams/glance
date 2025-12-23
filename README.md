@@ -224,14 +224,6 @@ PAM backups are created during installation. From recovery mode:
 sudo sed -i '/pam_glance.so/d' /etc/pam.d/sudo
 ```
 
-## A Note on Security
-
-This package is in no way as secure as a password and will never be. Although it's harder to fool than basic face recognition (especially with IR cameras), a person who looks similar to you could potentially authenticate.
-
-Glance is a more quick and convenient way of logging in, not a more secure one.
-
-**IR cameras provide significantly better security** than RGB cameras as they are nearly impossible to spoof with photographs or screens.
-
 ⚠️ **DO NOT USE GLANCE AS THE SOLE AUTHENTICATION METHOD FOR YOUR SYSTEM.**
 
 ## Data Storage
