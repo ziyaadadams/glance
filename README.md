@@ -24,8 +24,6 @@ Using the central authentication system (PAM), this works everywhere you would o
 
 ## Installation
 
-Glance is currently available for Ubuntu and other Debian-based distributions. Built with Rust for performance and safety.
-
 > **Note:** The build of dlib can take several minutes. Give it time.
 
 ### Ubuntu / Debian
@@ -45,9 +43,19 @@ This will guide you through the installation and automatically:
 - Build and install the PAM module
 - Configure PAM for sudo, login, and lock screen
 
+### Arch Linux / Fedora / Other Distros
+
+Glance can be built from source on any Linux distribution. See the [Building from source](#building-from-source) section below.
+
+If you're interested in packaging Glance for your distro, feel free to open an issue!
+
+### Flatpak
+
+🚧 **Coming soonconfig --global user.email "ziyaada22@gmail.com" && git config --global user.name "Ziyaad Adams"* Flatpak support is currently in development.
+
 ### Building from source
 
-If you prefer to build manually, the following dependencies are required:
+Glance can be built on any Linux distribution with the required dependencies. Built with Rust for performance and safety.
 
 #### Dependencies
 
@@ -57,7 +65,7 @@ If you prefer to build manually, the following dependencies are required:
 - dlib (face recognition)
 - LLVM/Clang (for dlib bindings)
 
-To install them on Debian/Ubuntu:
+**Debian/Ubuntu:**
 
 ```bash
 sudo apt-get update && sudo apt-get install -y \
@@ -67,9 +75,40 @@ sudo apt-get update && sudo apt-get install -y \
     gir1.2-gtk-4.0 gir1.2-adw-1 libclang-dev llvm-dev v4l-utils
 ```
 
+**Fedora:**
+
+```bash
+sudo dnf install -y \
+    cmake gcc-c++ pkg-config curl wget bzip2 git \
+    opencv-devel openblas-devel lapack-devel libjpeg-devel libpng-devel \
+    cairo-devel gobject-introspection-devel glib2-devel \
+    gtk4-devel libadwaita-devel clang-devel llvm-devel v4l-utils
+```
+
+**Arch Linux:**
+
+```bash
+sudo pacman -S --needed \
+    cmake base-devel pkg-config curl wget bzip2 git \
+    opencv openblas lapack libjpeg-turbo libpng \
+    cairo gobject-introspection glib2 \
+    gtk4 libadwaita clang llvm v4l-utils
+```
+
+#### Rust Toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
 #### Build
 
 ```bash
+# Clone the repository
+git clone https://github.com/ziyaadsmada/glance.git
+cd glance
+
 # Build GUI application
 cd glance
 cargo build --release
@@ -79,12 +118,40 @@ cd ../pam-glance
 cargo build --release
 ```
 
-You can install to your system with:
+#### Install
 
 ```bash
+# Install binaries
 sudo cp glance/target/release/glance /usr/local/bin/
 sudo cp pam-glance/target/release/libpam_glance.so /lib/x86_64-linux-gnu/security/pam_glance.so
+
+# Download face recognition models
+sudo mkdir -p /usr/share/glance/models
+cd /tmp
+curl -LO http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
+curl -LO http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2
+bunzip2 *.bz2
+sudo mv *.dat /usr/share/glance/models/
+
+# Create data directories
+sudo mkdir -p /var/lib/glance
+mkdir -p ~/.local/share/glance
+
+# Install desktop entry (optional)
+sudo cp glance/data/io.github.glance.Glance.desktop /usr/share/applications/
+sudo mkdir -p /usr/share/icons/hicolor/scalable/apps
+sudo cp glance/data/icons/hicolor/scalable/apps/io.github.glance.Glance.svg /usr/share/icons/hicolor/scalable/apps/
 ```
+
+#### Configure PAM
+
+Add the following line to your PAM configuration files (e.g., `/etc/pam.d/sudo`, `/etc/pam.d/gdm-password`):
+
+```
+auth sufficient pam_glance.so
+```
+
+Place it **before** `@include common-auth` or other auth lines for facial recognition to run first.
 
 ## Setup
 
