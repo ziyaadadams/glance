@@ -51,7 +51,7 @@ If you're interested in packaging Glance for your distro, feel free to open an i
 
 ### Flatpak
 
-🚧 **Coming soonconfig --global user.email "ziyaada22@gmail.com" && git config --global user.name "Ziyaad Adams"* Flatpak support is currently in development.
+Flatpak support is currently in development.
 
 ### Building from source
 
