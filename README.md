@@ -24,8 +24,6 @@ Using the central authentication system (PAM), this works everywhere you would o
 
 ## Installation
 
-> **Note:** The build of dlib can take several minutes. Give it time.
-
 ### Ubuntu / Debian
 
 Clone the repository and run the installer:
