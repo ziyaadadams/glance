@@ -1,0 +1,128 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $IrSetupDialog: Adw.Dialog {
+  title: "IR Camera Setup";
+  content-width: 500;
+  content-height: 450;
+  
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-start-title-buttons: false;
+      show-end-title-buttons: false;
+      
+      [end]
+      Button btn_close {
+        label: "Close";
+        clicked => $on_close();
+      }
+    }
+    
+    content: Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        title: "Current Status";
+        
+        Adw.ActionRow row_installed {
+          title: "linux-enable-ir-emitter";
+          
+          [suffix]
+          Image img_installed {
+            icon-name: "emblem-ok-symbolic";
+            styles ["success"]
+          }
+        }
+        
+        Adw.ActionRow row_configured {
+          title: "Configuration";
+          
+          [suffix]
+          Image img_configured {
+            icon-name: "dialog-warning-symbolic";
+            styles ["warning"]
+          }
+        }
+        
+        Adw.ActionRow row_systemd {
+          title: "Auto-start at Login";
+          
+          [suffix]
+          Switch sw_systemd {
+            valign: center;
+          }
+          
+          [suffix]
+          Image img_systemd {
+            icon-name: "emblem-ok-symbolic";
+            styles ["success"]
+          }
+        }
+      }
+      
+      Adw.PreferencesGroup {
+        title: "Setup Steps";
+        
+        Adw.ActionRow {
+          title: "🚀 One-Click Install";
+          subtitle: "Automatically download and install";
+          activatable: true;
+          activated => $on_auto_install();
+          
+          [suffix]
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+        
+        Adw.ActionRow {
+          title: "⚙️ Configure IR Emitter";
+          subtitle: "Run configuration (requires terminal)";
+          activatable: true;
+          activated => $on_configure();
+          
+          [suffix]
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+        
+        Adw.ActionRow {
+          title: "🧪 Test IR Camera";
+          subtitle: "Check if IR LED is working";
+          activatable: true;
+          activated => $on_test_ir();
+          
+          [suffix]
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+      }
+      
+      Adw.PreferencesGroup {
+        title: "Manual Commands";
+        description: "If automatic setup doesn't work:";
+        
+        Box {
+          orientation: vertical;
+          spacing: 8;
+          margin-top: 8;
+          
+          Label {
+            label: "<tt>sudo linux-enable-ir-emitter configure</tt>";
+            use-markup: true;
+            xalign: 0;
+            selectable: true;
+          }
+          
+          Label {
+            label: "<tt>sudo linux-enable-ir-emitter boot enable</tt>";
+            use-markup: true;
+            xalign: 0;
+            selectable: true;
+          }
+        }
+      }
+    };
+  }
+}

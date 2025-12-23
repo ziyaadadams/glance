@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Glance
+Comment=Windows Hello-style facial recognition for Linux
+Exec=glance
+Icon=io.github.glance.Glance
+Terminal=false
+Type=Application
+Categories=Settings;Security;System;
+Keywords=face;recognition;login;authentication;hello;biometric;
+StartupNotify=true

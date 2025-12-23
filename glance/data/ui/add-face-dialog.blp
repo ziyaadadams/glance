@@ -1,0 +1,48 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $AddFaceDialog: Adw.Dialog {
+  title: "Add Face";
+  content-width: 400;
+  content-height: 300;
+  
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-start-title-buttons: false;
+      show-end-title-buttons: false;
+      
+      [start]
+      Button btn_dialog_cancel {
+        label: "Cancel";
+        clicked => $on_cancel();
+      }
+      
+      [end]
+      Button btn_dialog_start {
+        label: "Start";
+        styles ["suggested-action"]
+        clicked => $on_start();
+      }
+    }
+    
+    content: Adw.StatusPage {
+      icon-name: "view-reveal-symbolic";
+      title: "Set Up Face Recognition";
+      description: "Position your face in front of the camera.\nWe'll capture multiple angles for better accuracy.";
+      
+      Adw.PreferencesGroup {
+        Adw.ActionRow {
+          title: "Multi-Pose Capture";
+          subtitle: "Capture 5 angles for better accuracy (recommended)";
+          
+          [suffix]
+          Switch sw_multi_pose {
+            active: true;
+            valign: center;
+          }
+        }
+      }
+    };
+  }
+}

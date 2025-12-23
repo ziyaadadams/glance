@@ -1,0 +1,78 @@
+app-id: io.github.glance.Glance
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: glance
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=all
+  - --filesystem=xdg-data/glance:create
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+
+modules:
+  - name: opencv
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_LIST=core,imgproc,videoio
+      - -DWITH_V4L=ON
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_opencv_apps=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_PERF_TESTS=OFF
+      - -DBUILD_DOCS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/opencv/opencv/archive/refs/tags/4.9.0.tar.gz
+        sha256: ddf76f9dffd322c7c3cb1f721d0887f62d747b82059342213138dc190f28bc6c
+
+  - name: dlib
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DDLIB_NO_GUI_SUPPORT=ON
+    sources:
+      - type: archive
+        url: https://github.com/davisking/dlib/archive/refs/tags/v19.24.2.tar.gz
+        sha256: 0f5c7166e06e0f0a9c2b531fe2c521956b6b7517df9a36271a4ed89e24a7db0c
+
+  # Face recognition models from dlib.net
+  - name: face-models
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 shape_predictor_68_face_landmarks.dat /app/share/glance/models/
+      - install -Dm644 dlib_face_recognition_resnet_model_v1.dat /app/share/glance/models/
+    sources:
+      - type: archive
+        url: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
+        sha256: fbdc2cb80eb9aa7a758672cbfdda32ba6700aadb0b8133a8b2c1a9a91ad4c2a1
+        dest-filename: shape_predictor_68_face_landmarks.dat.bz2
+      - type: archive
+        url: http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2
+        sha256: 2316b25ae80acf4ad9b620b00071a56a95e8a508dfe45c0c25e6fddc77a3c655
+        dest-filename: dlib_face_recognition_resnet_model_v1.dat.bz2
+
+  - name: glance
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/glance -t /app/bin/
+      - install -Dm644 data/io.github.glance.Glance.desktop -t /app/share/applications/
+      - install -Dm644 data/io.github.glance.Glance.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 data/icons/hicolor/scalable/apps/io.github.glance.Glance.svg -t /app/share/icons/hicolor/scalable/apps/
+    sources:
+      - type: dir
+        path: glance
+      - cargo-sources.json

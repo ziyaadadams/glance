@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.glance.Glance</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Glance</name>
+  <summary>Windows Hello-style facial recognition for Linux</summary>
+  <description>
+    <p>
+      Glance provides secure facial recognition authentication for Linux,
+      similar to Windows Hello. It supports both IR cameras (for enhanced
+      security) and standard RGB cameras.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>IR camera support for Windows Hello-compatible cameras</li>
+      <li>RGB camera fallback for standard webcams</li>
+      <li>PAM integration for sudo, login, and lock screen</li>
+      <li>Modern GTK4/Libadwaita interface</li>
+      <li>Fast recognition (~2 seconds)</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.glance.Glance.desktop</launchable>
+  <url type="homepage">https://github.com/glance-linux/glance</url>
+  <url type="bugtracker">https://github.com/glance-linux/glance/issues</url>
+  <developer_name>Glance Team</developer_name>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.0.0" date="2025-12-23">
+      <description>
+        <p>Initial release with core features:</p>
+        <ul>
+          <li>Face registration with IR or RGB camera</li>
+          <li>PAM authentication module</li>
+          <li>GNOME integration</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main registration screen</caption>
+      <image>https://raw.githubusercontent.com/glance-linux/glance/main/screenshots/main.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Settings</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>face</keyword>
+    <keyword>recognition</keyword>
+    <keyword>authentication</keyword>
+    <keyword>biometric</keyword>
+    <keyword>login</keyword>
+    <keyword>hello</keyword>
+  </keywords>
+  <provides>
+    <binary>glance</binary>
+  </provides>
+</component>

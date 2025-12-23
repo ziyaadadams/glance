@@ -1,0 +1,151 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $FacerecWindow: Adw.ApplicationWindow {
+  title: "Glance";
+  default-width: 500;
+  default-height: 650;
+  
+  Adw.ToastOverlay toast_overlay {
+    Adw.NavigationView navigation {
+      Adw.NavigationPage {
+        title: "Glance";
+        tag: "main";
+        
+        Adw.ToolbarView {
+          [top]
+          Adw.HeaderBar {
+            [end]
+            MenuButton {
+              icon-name: "open-menu-symbolic";
+              menu-model: primary_menu;
+            }
+          }
+          
+          content: Adw.StatusPage status_page {
+            icon-name: "camera-web-symbolic";
+            title: "Glance";
+            description: "Set up facial recognition to sign in quickly and securely.";
+            
+            Box {
+              orientation: vertical;
+              spacing: 24;
+              halign: center;
+              
+              // Camera info label
+              Label lbl_camera_info {
+                label: "Detecting camera...";
+                styles ["dim-label"]
+              }
+              
+              // Registered status
+              Label lbl_registered_status {
+                label: "";
+                styles ["heading"]
+              }
+              
+              // Action buttons
+              Box {
+                orientation: vertical;
+                spacing: 12;
+                halign: center;
+                
+                Button btn_add_face {
+                  label: "Add Face";
+                  styles ["suggested-action", "pill"]
+                  clicked => $on_add_face_clicked();
+                }
+                
+                Button btn_ir_setup {
+                  label: "IR Camera Setup";
+                  styles ["pill"]
+                  clicked => $on_ir_setup_clicked();
+                }
+              }
+            }
+          };
+        }
+      }
+      
+      // Capture page
+      Adw.NavigationPage {
+        title: "Capture Face";
+        tag: "capture";
+        
+        Adw.ToolbarView {
+          [top]
+          Adw.HeaderBar {
+            show-back-button: true;
+            
+            [end]
+            Button btn_cancel {
+              label: "Cancel";
+              clicked => $on_capture_cancel();
+            }
+          }
+          
+          content: Box {
+            orientation: vertical;
+            spacing: 16;
+            margin-top: 16;
+            margin-bottom: 16;
+            margin-start: 16;
+            margin-end: 16;
+            
+            // Title
+            Label lbl_capture_title {
+              label: "Position Your Face";
+              styles ["title-1"]
+            }
+            
+            // Pose instruction
+            Label lbl_pose_instruction {
+              label: "Look straight at the camera";
+              styles ["heading"]
+            }
+            
+            // Camera preview with overlay
+            Overlay camera_overlay {
+              vexpand: true;
+              
+              Picture camera_picture {
+                content-fit: cover;
+              }
+              
+              [overlay]
+              DrawingArea face_guide {
+                halign: fill;
+                valign: fill;
+              }
+            }
+            
+            // Guidance label
+            Label lbl_guidance {
+              label: "Position your face in the oval";
+              styles ["guidance-neutral"]
+            }
+            
+            // Progress bar
+            ProgressBar capture_progress {
+              show-text: true;
+            }
+          };
+        }
+      }
+    }
+  }
+}
+
+menu primary_menu {
+  section {
+    item {
+      label: _("Preferences");
+      action: "app.preferences";
+    }
+    
+    item {
+      label: _("About Glance");
+      action: "app.about";
+    }
+  }
+}

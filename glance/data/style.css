@@ -1,0 +1,76 @@
+/* Glance Custom Styles */
+
+/* Guidance states */
+.guidance-optimal {
+    color: @success_color;
+    font-weight: bold;
+}
+
+.guidance-warning {
+    color: @warning_color;
+    font-weight: bold;
+}
+
+.guidance-neutral {
+    color: @dim_label_color;
+}
+
+/* Camera info badges */
+.camera-info-ir {
+    background: alpha(@success_color, 0.2);
+    color: @success_color;
+    border-radius: 12px;
+    padding: 6px 12px;
+    font-weight: bold;
+}
+
+.camera-info-rgb {
+    background: alpha(@accent_color, 0.2);
+    color: @accent_color;
+    border-radius: 12px;
+    padding: 6px 12px;
+}
+
+/* Pose instruction */
+.pose-instruction {
+    font-size: 1.2em;
+    font-weight: bold;
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: alpha(@accent_bg_color, 0.3);
+}
+
+/* Camera preview */
+.camera-preview {
+    background: #000;
+    border-radius: 16px;
+    min-height: 300px;
+}
+
+/* Progress during capture */
+progressbar.capture-progress > trough > progress {
+    background: @success_color;
+}
+
+/* Success/error icons in preferences */
+image.success {
+    color: @success_color;
+}
+
+image.warning {
+    color: @warning_color;
+}
+
+image.error {
+    color: @error_color;
+}
+
+/* IR indicator overlay */
+.ir-indicator {
+    background: rgba(255, 0, 0, 0.8);
+    color: white;
+    font-weight: bold;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin: 8px;
+}

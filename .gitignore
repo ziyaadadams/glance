@@ -1,0 +1,28 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Flatpak
+.flatpak/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+*.so
+*.o
+*.a
