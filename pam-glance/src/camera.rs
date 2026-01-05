@@ -36,44 +36,70 @@ impl SmartCamera {
             anyhow::bail!("No cameras detected");
         }
         
-        let selected = if prefer_ir {
-            cameras.iter()
-                .find(|c| c.camera_type == CameraType::Infrared)
-                .or_else(|| cameras.iter().find(|c| c.camera_type == CameraType::Rgb))
-                .or_else(|| cameras.first())
+        // Build prioritized list of cameras to try
+        let mut cameras_to_try: Vec<&CameraInfo> = if prefer_ir {
+            // Try IR first, then RGB, then Unknown
+            let mut list: Vec<&CameraInfo> = cameras.iter()
+                .filter(|c| c.camera_type == CameraType::Infrared)
+                .collect();
+            list.extend(cameras.iter().filter(|c| c.camera_type == CameraType::Rgb));
+            list.extend(cameras.iter().filter(|c| c.camera_type == CameraType::Unknown));
+            list
         } else {
-            cameras.iter()
-                .find(|c| c.camera_type == CameraType::Rgb)
-                .or_else(|| cameras.first())
+            // Try RGB first, then IR, then Unknown
+            let mut list: Vec<&CameraInfo> = cameras.iter()
+                .filter(|c| c.camera_type == CameraType::Rgb)
+                .collect();
+            list.extend(cameras.iter().filter(|c| c.camera_type == CameraType::Infrared));
+            list.extend(cameras.iter().filter(|c| c.camera_type == CameraType::Unknown));
+            list
         };
         
-        let camera_info = selected
-            .cloned()
-            .context("No suitable camera found")?;
-        
-        info!("Opening camera: {} ({})", camera_info.name, 
-              match camera_info.camera_type {
-                  CameraType::Infrared => "IR",
-                  CameraType::Rgb => "RGB",
-                  CameraType::Unknown => "Unknown",
-              });
-        
-        let mut capture = VideoCapture::new(camera_info.device_id, videoio::CAP_V4L2)?;
-        
-        if !capture.is_opened()? {
-            anyhow::bail!("Failed to open camera {}", camera_info.device_id);
+        // Try each camera until one works
+        let mut last_error = String::new();
+        for camera_info in cameras_to_try {
+            info!("Trying camera: {} ({})", camera_info.name, 
+                  match camera_info.camera_type {
+                      CameraType::Infrared => "IR",
+                      CameraType::Rgb => "RGB",
+                      CameraType::Unknown => "Unknown",
+                  });
+            
+            match VideoCapture::new(camera_info.device_id, videoio::CAP_V4L2) {
+                Ok(mut capture) => {
+                    if capture.is_opened().unwrap_or(false) {
+                        // Try to read a test frame
+                        let mut test_frame = Mat::default();
+                        if capture.read(&mut test_frame).is_ok() && !test_frame.empty() {
+                            capture.set(videoio::CAP_PROP_FRAME_WIDTH, 640.0)?;
+                            capture.set(videoio::CAP_PROP_FRAME_HEIGHT, 480.0)?;
+                            
+                            let is_ir = camera_info.camera_type == CameraType::Infrared;
+                            info!("Successfully opened camera video{}", camera_info.device_id);
+                            
+                            return Ok(Self {
+                                capture,
+                                camera_info: camera_info.clone(),
+                                is_ir,
+                            });
+                        } else {
+                            warn!("Camera video{} opened but couldn't read frames", camera_info.device_id);
+                            last_error = format!("Camera {} cannot read frames", camera_info.device_id);
+                        }
+                    } else {
+                        warn!("Failed to open camera video{}", camera_info.device_id);
+                        last_error = format!("Camera {} failed to open", camera_info.device_id);
+                    }
+                    let _ = capture.release();
+                }
+                Err(e) => {
+                    warn!("Error opening camera video{}: {}", camera_info.device_id, e);
+                    last_error = format!("Camera {} error: {}", camera_info.device_id, e);
+                }
+            }
         }
         
-        capture.set(videoio::CAP_PROP_FRAME_WIDTH, 640.0)?;
-        capture.set(videoio::CAP_PROP_FRAME_HEIGHT, 480.0)?;
-        
-        let is_ir = camera_info.camera_type == CameraType::Infrared;
-        
-        Ok(Self {
-            capture,
-            camera_info,
-            is_ir,
-        })
+        anyhow::bail!("No working camera found. Last error: {}", last_error)
     }
     
     pub fn read(&mut self) -> Result<Mat> {
@@ -208,10 +234,36 @@ fn detect_camera_type(name: &str) -> CameraType {
 }
 
 fn is_capture_device(device_id: i32) -> bool {
+    // Check V4L2 capabilities to see if this is a real capture device
+    let device_path = format!("/dev/video{}", device_id);
+    
+    // Read device capabilities from sysfs
+    let caps_path = format!("/sys/class/video4linux/video{}/device/video4linux/video{}/dev", device_id, device_id);
+    
+    // Try to check if device supports video capture via ioctl info
+    // Metadata devices typically have index 1 or 3 on integrated cameras
+    let index_path = format!("/sys/class/video4linux/video{}/index", device_id);
+    if let Ok(index_str) = std::fs::read_to_string(&index_path) {
+        if let Ok(index) = index_str.trim().parse::<i32>() {
+            // Index 0 is typically the main capture device, index 1 is metadata
+            if index != 0 {
+                debug!("Skipping video{} (index {}), likely metadata device", device_id, index);
+                return false;
+            }
+        }
+    }
+    
+    // Verify we can actually open and read frames
     if let Ok(mut cap) = VideoCapture::new(device_id, videoio::CAP_V4L2) {
-        let is_opened = cap.is_opened().unwrap_or(false);
+        if cap.is_opened().unwrap_or(false) {
+            // Try to read a frame to verify it's a real capture device
+            let mut frame = Mat::default();
+            if cap.read(&mut frame).is_ok() && !frame.empty() {
+                let _ = cap.release();
+                return true;
+            }
+        }
         let _ = cap.release();
-        return is_opened;
     }
     false
 }

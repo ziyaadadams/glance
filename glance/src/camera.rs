@@ -63,23 +63,9 @@ impl Camera {
     }
     
     pub fn detect_cameras() -> Option<CameraInfo> {
-        let mut cameras = Vec::new();
+        let cameras = Self::detect_all_cameras();
         
-        for device_id in (0..10).step_by(2) {
-            if let Ok(cap) = VideoCapture::new(device_id, CAP_V4L2) {
-                if cap.is_opened().unwrap_or(false) {
-                    let name = Self::get_camera_name(device_id);
-                    let is_ir = Self::is_ir_camera(&name);
-                    eprintln!("Found camera {}: {} (IR: {})", device_id, name, is_ir);
-                    cameras.push(CameraInfo {
-                        device_id,
-                        name,
-                        is_ir,
-                    });
-                }
-            }
-        }
-        
+        // Prefer IR camera
         if let Some(ir_cam) = cameras.iter().find(|c| c.is_ir) {
             eprintln!("Selected IR camera: {} (device {})", ir_cam.name, ir_cam.device_id);
             return Some(ir_cam.clone());
@@ -87,9 +73,61 @@ impl Camera {
         
         if let Some(cam) = cameras.first() {
             eprintln!("Selected camera: {} (device {})", cam.name, cam.device_id);
+            return Some(cam.clone());
         }
         
-        cameras.into_iter().next()
+        None
+    }
+    
+    /// Detect all available cameras (both IR and RGB)
+    pub fn detect_all_cameras() -> Vec<CameraInfo> {
+        let mut cameras = Vec::new();
+        
+        for device_id in 0..10 {
+            // Check if this is a metadata device by reading the index
+            let index_path = format!("/sys/class/video4linux/video{}/index", device_id);
+            if let Ok(index_str) = fs::read_to_string(&index_path) {
+                if let Ok(index) = index_str.trim().parse::<i32>() {
+                    // Index 0 is typically the main capture device, index 1+ are metadata
+                    if index != 0 {
+                        eprintln!("Skipping video{} (index {}), likely metadata device", device_id, index);
+                        continue;
+                    }
+                }
+            }
+            
+            if let Ok(mut cap) = VideoCapture::new(device_id, CAP_V4L2) {
+                if cap.is_opened().unwrap_or(false) {
+                    // Try to read a frame to verify it's a real capture device
+                    let mut test_frame = opencv::core::Mat::default();
+                    if cap.read(&mut test_frame).is_ok() && !test_frame.empty() {
+                        let name = Self::get_camera_name(device_id);
+                        let is_ir = Self::is_ir_camera(&name);
+                        eprintln!("Found camera {}: {} (IR: {})", device_id, name, is_ir);
+                        cameras.push(CameraInfo {
+                            device_id,
+                            name,
+                            is_ir,
+                        });
+                    }
+                }
+                let _ = cap.release();
+            }
+        }
+        
+        cameras
+    }
+    
+    /// Get the RGB camera (for dual-camera capture)
+    pub fn detect_rgb_camera() -> Option<CameraInfo> {
+        let cameras = Self::detect_all_cameras();
+        cameras.into_iter().find(|c| !c.is_ir)
+    }
+    
+    /// Get the IR camera
+    pub fn detect_ir_camera() -> Option<CameraInfo> {
+        let cameras = Self::detect_all_cameras();
+        cameras.into_iter().find(|c| c.is_ir)
     }
     
     fn get_camera_name(device_id: i32) -> String {

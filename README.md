@@ -191,6 +191,14 @@ sudo linux-enable-ir-emitter configure
 sudo linux-enable-ir-emitter boot enable
 ```
 
+## Known Limitations
+
+### GNOME Keyring
+
+Glance **cannot unlock the GNOME Keyring**. The keyring uses your actual password as the encryption key for stored secrets (passwords, SSH keys, etc.). Since Glance authenticates via facial recognition without knowing your password, the keyring remains locked after login.
+
+**Workaround:** You'll be prompted to enter your password once to unlock the keyring after logging in with face recognition. Alternatively, you can disable keyring auto-lock or use a blank keyring password (not recommended for security).
+
 ## Troubleshooting
 
 Any errors get logged directly into the system journal. You can view them with:

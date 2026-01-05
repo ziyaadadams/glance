@@ -206,6 +206,7 @@ pub fn load_user_faces(data_dir: &Path, username: &str) -> Result<Vec<Vec<f64>>>
     
     let mut encodings = Vec::new();
     
+    // Load legacy encodings
     if let Some(arr) = data.get("encodings").and_then(|e| e.as_array()) {
         for enc in arr {
             if let Some(nested_enc) = enc.get("encoding").and_then(|e| e.as_array()) {
@@ -218,6 +219,34 @@ pub fn load_user_faces(data_dir: &Path, username: &str) -> Result<Vec<Vec<f64>>>
             }
             else if let Some(enc_arr) = enc.as_array() {
                 let encoding: Vec<f64> = enc_arr.iter()
+                    .filter_map(|v| v.as_f64())
+                    .collect();
+                if !encoding.is_empty() {
+                    encodings.push(encoding);
+                }
+            }
+        }
+    }
+    
+    // Load IR encodings (new format)
+    if let Some(arr) = data.get("ir_encodings").and_then(|e| e.as_array()) {
+        for enc in arr {
+            if let Some(nested_enc) = enc.get("encoding").and_then(|e| e.as_array()) {
+                let encoding: Vec<f64> = nested_enc.iter()
+                    .filter_map(|v| v.as_f64())
+                    .collect();
+                if !encoding.is_empty() {
+                    encodings.push(encoding);
+                }
+            }
+        }
+    }
+    
+    // Load RGB encodings (new format)
+    if let Some(arr) = data.get("rgb_encodings").and_then(|e| e.as_array()) {
+        for enc in arr {
+            if let Some(nested_enc) = enc.get("encoding").and_then(|e| e.as_array()) {
+                let encoding: Vec<f64> = nested_enc.iter()
                     .filter_map(|v| v.as_f64())
                     .collect();
                 if !encoding.is_empty() {

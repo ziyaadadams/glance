@@ -30,6 +30,13 @@ mod imp {
         pub required_good_frames: Cell<u32>,
         pub captured_encodings: RefCell<Vec<(Vec<f64>, String)>>,
         
+        // Dual-camera capture state
+        pub ir_encodings: RefCell<Vec<(Vec<f64>, String)>>,
+        pub rgb_encodings: RefCell<Vec<(Vec<f64>, String)>>,
+        pub current_camera_type: RefCell<String>,  // "ir" or "rgb"
+        pub completed_ir_capture: Cell<bool>,
+        pub completed_rgb_capture: Cell<bool>,
+        
         // Guidance smoothing
         pub last_guidance: RefCell<String>,
         pub guidance_stable_frames: Cell<u32>,
@@ -702,15 +709,36 @@ impl GlanceWindow {
             return;
         }
         
-        // Reset state - simple single capture like Windows Hello
+        // Reset state - dual-camera capture for fallback support
         imp.is_capturing.set(true);
         imp.consecutive_good_frames.set(0);
         imp.captured_encodings.borrow_mut().clear();
+        imp.ir_encodings.borrow_mut().clear();
+        imp.rgb_encodings.borrow_mut().clear();
+        imp.completed_ir_capture.set(false);
+        imp.completed_rgb_capture.set(false);
         *imp.last_guidance.borrow_mut() = String::new();
         imp.guidance_stable_frames.set(0);
         *imp.last_status.borrow_mut() = String::new();
         imp.status_stable_frames.set(0);
         imp.frame_count.set(0);
+        
+        // Detect available cameras and decide capture strategy
+        let has_ir = Camera::detect_ir_camera().is_some();
+        let has_rgb = Camera::detect_rgb_camera().is_some();
+        
+        // Start with IR camera if available, otherwise RGB
+        if has_ir {
+            *imp.current_camera_type.borrow_mut() = "ir".to_string();
+            if let Some(ir_cam) = Camera::detect_ir_camera() {
+                *imp.camera_info.borrow_mut() = Some(ir_cam);
+            }
+        } else if has_rgb {
+            *imp.current_camera_type.borrow_mut() = "rgb".to_string();
+            if let Some(rgb_cam) = Camera::detect_rgb_camera() {
+                *imp.camera_info.borrow_mut() = Some(rgb_cam);
+            }
+        }
         
         // Navigate to capture page
         if let Some(ref nav) = *imp.navigation.borrow() {
@@ -885,11 +913,63 @@ impl GlanceWindow {
     fn on_pose_captured(&self, encoding: Vec<f64>) {
         let imp = self.imp();
         
-        // Store encoding with "center" pose label
+        let current_type = imp.current_camera_type.borrow().clone();
+        
+        // Store encoding based on current camera type
+        if current_type == "ir" {
+            imp.ir_encodings.borrow_mut().push((encoding.clone(), "center".to_string()));
+            imp.completed_ir_capture.set(true);
+            eprintln!("[Capture] IR camera capture complete");
+            
+            // Check if RGB camera is available for fallback capture
+            if let Some(rgb_cam) = Camera::detect_rgb_camera() {
+                eprintln!("[Capture] Switching to RGB camera for fallback capture...");
+                
+                // Stop current capture
+                imp.is_capturing.set(false);
+                *imp.frame_receiver.borrow_mut() = None;
+                
+                // Switch to RGB camera
+                *imp.camera_info.borrow_mut() = Some(rgb_cam);
+                *imp.current_camera_type.borrow_mut() = "rgb".to_string();
+                
+                // Reset capture state for RGB
+                imp.consecutive_good_frames.set(0);
+                imp.frame_count.set(0);
+                imp.is_capturing.set(true);
+                
+                // Update UI
+                self.set_capture_status("Now capturing with regular camera...", false);
+                if let Some(ref bar) = *imp.capture_progress.borrow() {
+                    bar.set_fraction(0.0);
+                }
+                if let Some(ref lbl) = *imp.lbl_pose_instruction.borrow() {
+                    lbl.set_label("Look at the camera (RGB backup)");
+                }
+                
+                // Start RGB camera preview
+                self.start_camera_preview();
+                return;
+            }
+        } else if current_type == "rgb" {
+            imp.rgb_encodings.borrow_mut().push((encoding.clone(), "center".to_string()));
+            imp.completed_rgb_capture.set(true);
+            eprintln!("[Capture] RGB camera capture complete");
+        }
+        
+        // Also store in legacy encodings for backwards compatibility
         imp.captured_encodings.borrow_mut().push((encoding, "center".to_string()));
         
-        // Single capture complete - save face data
-        self.save_captured_face();
+        // If we've captured from all available cameras, save
+        let has_ir = Camera::detect_ir_camera().is_some();
+        let has_rgb = Camera::detect_rgb_camera().is_some();
+        
+        let ir_done = !has_ir || imp.completed_ir_capture.get();
+        let rgb_done = !has_rgb || imp.completed_rgb_capture.get();
+        
+        if ir_done && rgb_done {
+            self.save_captured_face();
+        }
     }
     
     fn save_captured_face(&self) {
@@ -907,16 +987,33 @@ impl GlanceWindow {
         self.set_capture_status("All done!", true);
         
         let username = imp.current_user.borrow().clone();
-        let encodings = imp.captured_encodings.borrow().clone();
-        let is_ir = imp.camera_info.borrow().as_ref().map(|c| c.is_ir).unwrap_or(false);
+        let ir_encodings = imp.ir_encodings.borrow().clone();
+        let rgb_encodings = imp.rgb_encodings.borrow().clone();
+        let legacy_encodings = imp.captured_encodings.borrow().clone();
         
-        // Create face data
+        // Create face data with both IR and RGB encodings
         let mut face_data = FaceData::new(&username);
-        face_data.ir_captured = is_ir;
         
-        for (encoding, pose) in encodings {
+        // Add IR encodings
+        for (encoding, pose) in &ir_encodings {
+            face_data.add_ir_encoding(encoding.clone(), pose);
+        }
+        face_data.ir_captured = !ir_encodings.is_empty();
+        
+        // Add RGB encodings
+        for (encoding, pose) in &rgb_encodings {
+            face_data.add_rgb_encoding(encoding.clone(), pose);
+        }
+        face_data.rgb_captured = !rgb_encodings.is_empty();
+        
+        // Also add to legacy encodings for backwards compatibility
+        for (encoding, pose) in legacy_encodings {
             face_data.add_encoding(encoding, &pose);
         }
+        
+        let total_encodings = face_data.ir_encodings.len() + face_data.rgb_encodings.len();
+        eprintln!("[Save] IR encodings: {}, RGB encodings: {}", 
+                  face_data.ir_encodings.len(), face_data.rgb_encodings.len());
         
         // Save
         let save_result = save_face_data(&face_data);
@@ -931,12 +1028,52 @@ impl GlanceWindow {
         // Show success dialog with instructions
         match save_result {
             Ok(_) => {
-                self.show_success_dialog(face_data.encodings.len());
+                self.show_success_dialog_dual(face_data.ir_encodings.len(), face_data.rgb_encodings.len());
             }
             Err(e) => {
                 self.show_toast(&format!("Error saving: {}", e));
             }
         }
+    }
+    
+    fn show_success_dialog_dual(&self, ir_count: usize, rgb_count: usize) {
+        let mut body = String::new();
+        
+        if ir_count > 0 && rgb_count > 0 {
+            body = format!(
+                "Your face has been registered with both cameras:\n\
+                • {} IR camera capture(s)\n\
+                • {} RGB camera capture(s)\n\n\
+                This provides fallback authentication if one camera stops working.\n\n\
+                Note: PAM must be configured via install.sh for authentication to work.",
+                ir_count, rgb_count
+            );
+        } else if ir_count > 0 {
+            body = format!(
+                "Your face has been registered with {} IR camera capture(s).\n\n\
+                You can now use facial recognition to log in.\n\n\
+                Note: PAM must be configured via install.sh for authentication to work.",
+                ir_count
+            );
+        } else if rgb_count > 0 {
+            body = format!(
+                "Your face has been registered with {} RGB camera capture(s).\n\n\
+                You can now use facial recognition to log in.\n\n\
+                Note: PAM must be configured via install.sh for authentication to work.",
+                rgb_count
+            );
+        }
+        
+        let dialog = adw::MessageDialog::builder()
+            .heading("You're All Set")
+            .body(&body)
+            .modal(true)
+            .transient_for(self)
+            .build();
+        
+        dialog.add_response("ok", "OK");
+        dialog.set_default_response(Some("ok"));
+        dialog.present();
     }
     
     fn show_success_dialog(&self, pose_count: usize) {
@@ -1038,11 +1175,16 @@ impl GlanceWindow {
     }
     
     fn show_ir_setup(&self) {
-        // Create a custom dialog with copyable commands
+        // Check current status
+        let ir_tool_installed = Self::check_ir_emitter_installed();
+        let ir_configured = Self::check_ir_emitter_configured();
+        let pam_configured = Self::check_pam_ir_configured();
+        
+        // Create dialog
         let dialog = adw::Window::builder()
             .title("IR Camera Setup")
-            .default_width(500)
-            .default_height(400)
+            .default_width(550)
+            .default_height(500)
             .modal(true)
             .transient_for(self)
             .build();
@@ -1050,6 +1192,10 @@ impl GlanceWindow {
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
         toolbar.add_top_bar(&header);
+        
+        let scroll = gtk::ScrolledWindow::builder()
+            .vexpand(true)
+            .build();
         
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1061,91 +1207,353 @@ impl GlanceWindow {
             .build();
         
         let title = gtk::Label::builder()
-            .label("Enable IR Emitter")
+            .label("IR Camera Setup")
             .css_classes(["title-2"])
             .build();
         
         let desc = gtk::Label::builder()
-            .label("If you have a Windows Hello compatible IR camera, run these commands to enable the infrared emitter:")
+            .label("Configure your Windows Hello compatible IR camera for face authentication.")
             .wrap(true)
             .build();
         
-        // Command 1
-        let cmd1_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
+        content.append(&title);
+        content.append(&desc);
+        
+        // Status Section
+        let status_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
             .spacing(8)
-            .build();
-        let cmd1_entry = gtk::Entry::builder()
-            .text("sudo linux-enable-ir-emitter configure")
-            .editable(false)
-            .hexpand(true)
-            .build();
-        let cmd1_copy = gtk::Button::builder()
-            .icon_name("edit-copy-symbolic")
-            .tooltip_text("Copy to clipboard")
-            .build();
-        cmd1_copy.connect_clicked(glib::clone!(
-            #[weak] cmd1_entry,
-            #[weak] dialog,
-            move |_| {
-                let clipboard = dialog.clipboard();
-                clipboard.set_text(&cmd1_entry.text());
-            }
-        ));
-        cmd1_box.append(&cmd1_entry);
-        cmd1_box.append(&cmd1_copy);
-        
-        // Command 2
-        let cmd2_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let cmd2_entry = gtk::Entry::builder()
-            .text("sudo linux-enable-ir-emitter boot enable")
-            .editable(false)
-            .hexpand(true)
-            .build();
-        let cmd2_copy = gtk::Button::builder()
-            .icon_name("edit-copy-symbolic")
-            .tooltip_text("Copy to clipboard")
-            .build();
-        cmd2_copy.connect_clicked(glib::clone!(
-            #[weak] cmd2_entry,
-            #[weak] dialog,
-            move |_| {
-                let clipboard = dialog.clipboard();
-                clipboard.set_text(&cmd2_entry.text());
-            }
-        ));
-        cmd2_box.append(&cmd2_entry);
-        cmd2_box.append(&cmd2_copy);
-        
-        let note = gtk::Label::builder()
-            .label("The first command configures the emitter.\nThe second enables it on boot.")
-            .wrap(true)
-            .css_classes(["dim-label"])
+            .margin_top(16)
             .build();
         
+        let status_title = gtk::Label::builder()
+            .label("Status")
+            .css_classes(["heading"])
+            .halign(gtk::Align::Start)
+            .build();
+        status_box.append(&status_title);
+        
+        // Tool installed status
+        let tool_row = Self::create_status_row(
+            "IR Emitter Tool",
+            if ir_tool_installed { "Installed" } else { "Not installed" },
+            ir_tool_installed
+        );
+        status_box.append(&tool_row);
+        
+        // Configuration status
+        let config_row = Self::create_status_row(
+            "IR Configuration",
+            if ir_configured { "Configured" } else { "Not configured" },
+            ir_configured
+        );
+        status_box.append(&config_row);
+        
+        // PAM integration status
+        let pam_row = Self::create_status_row(
+            "PAM Integration",
+            if pam_configured { "Enabled" } else { "Not enabled" },
+            pam_configured
+        );
+        status_box.append(&pam_row);
+        
+        content.append(&status_box);
+        
+        // Actions Section
+        let actions_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_top(24)
+            .build();
+        
+        let actions_title = gtk::Label::builder()
+            .label("Actions")
+            .css_classes(["heading"])
+            .halign(gtk::Align::Start)
+            .build();
+        actions_box.append(&actions_title);
+        
+        // Install button
+        if !ir_tool_installed {
+            let install_btn = gtk::Button::builder()
+                .label("📥 Download & Install IR Emitter Tool")
+                .css_classes(["suggested-action"])
+                .build();
+            let dialog_weak = dialog.downgrade();
+            let self_weak = self.downgrade();
+            install_btn.connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                btn.set_label("Installing...");
+                if let Some(window) = self_weak.upgrade() {
+                    window.install_ir_emitter_tool();
+                }
+                if let Some(d) = dialog_weak.upgrade() {
+                    d.close();
+                }
+            });
+            actions_box.append(&install_btn);
+        }
+        
+        // Configure button
+        if ir_tool_installed && !ir_configured {
+            let config_btn = gtk::Button::builder()
+                .label("⚙️ Configure IR Emitter")
+                .css_classes(["suggested-action"])
+                .build();
+            let dialog_weak = dialog.downgrade();
+            let self_weak = self.downgrade();
+            config_btn.connect_clicked(move |_| {
+                if let Some(window) = self_weak.upgrade() {
+                    window.run_ir_emitter_configure();
+                }
+                if let Some(d) = dialog_weak.upgrade() {
+                    d.close();
+                }
+            });
+            actions_box.append(&config_btn);
+            
+            let note = gtk::Label::builder()
+                .label("This will open a terminal. Answer Y/N when the IR LED flashes.")
+                .wrap(true)
+                .css_classes(["dim-label"])
+                .build();
+            actions_box.append(&note);
+        }
+        
+        // Setup PAM button
+        if ir_tool_installed && ir_configured && !pam_configured {
+            let pam_btn = gtk::Button::builder()
+                .label("🔐 Enable PAM Integration")
+                .css_classes(["suggested-action"])
+                .build();
+            let dialog_weak = dialog.downgrade();
+            let self_weak = self.downgrade();
+            pam_btn.connect_clicked(move |_| {
+                if let Some(window) = self_weak.upgrade() {
+                    window.setup_pam_ir_integration();
+                }
+                if let Some(d) = dialog_weak.upgrade() {
+                    d.close();
+                }
+            });
+            actions_box.append(&pam_btn);
+        }
+        
+        // Test button
+        if ir_tool_installed {
+            let test_btn = gtk::Button::builder()
+                .label("🧪 Test IR Camera")
+                .build();
+            let self_weak = self.downgrade();
+            test_btn.connect_clicked(move |_| {
+                if let Some(window) = self_weak.upgrade() {
+                    window.test_ir_camera();
+                }
+            });
+            actions_box.append(&test_btn);
+        }
+        
+        // All done message
+        if ir_tool_installed && ir_configured && pam_configured {
+            let done_label = gtk::Label::builder()
+                .label("✅ IR camera is fully configured and ready to use!")
+                .css_classes(["success"])
+                .wrap(true)
+                .build();
+            actions_box.append(&done_label);
+        }
+        
+        content.append(&actions_box);
+        
+        // Close button
         let close_btn = gtk::Button::builder()
             .label("Close")
             .css_classes(["pill"])
             .halign(gtk::Align::Center)
+            .margin_top(24)
             .build();
         close_btn.connect_clicked(glib::clone!(
             #[weak] dialog,
             move |_| { dialog.close(); }
         ));
-        
-        content.append(&title);
-        content.append(&desc);
-        content.append(&cmd1_box);
-        content.append(&cmd2_box);
-        content.append(&note);
         content.append(&close_btn);
         
-        toolbar.set_content(Some(&content));
+        scroll.set_child(Some(&content));
+        toolbar.set_content(Some(&scroll));
         dialog.set_content(Some(&toolbar));
         dialog.present();
+    }
+    
+    fn create_status_row(label: &str, status: &str, is_ok: bool) -> gtk::Box {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        
+        let icon = if is_ok { "emblem-ok-symbolic" } else { "dialog-warning-symbolic" };
+        let icon_widget = gtk::Image::from_icon_name(icon);
+        if is_ok {
+            icon_widget.add_css_class("success");
+        } else {
+            icon_widget.add_css_class("warning");
+        }
+        
+        let label_widget = gtk::Label::builder()
+            .label(label)
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build();
+        
+        let status_widget = gtk::Label::builder()
+            .label(status)
+            .css_classes(["dim-label"])
+            .build();
+        
+        row.append(&icon_widget);
+        row.append(&label_widget);
+        row.append(&status_widget);
+        
+        row
+    }
+    
+    fn check_ir_emitter_installed() -> bool {
+        // Check common locations
+        let paths = [
+            dirs::home_dir().map(|h| h.join(".local/bin/linux-enable-ir-emitter")),
+            Some(std::path::PathBuf::from("/usr/bin/linux-enable-ir-emitter")),
+            Some(std::path::PathBuf::from("/usr/local/bin/linux-enable-ir-emitter")),
+        ];
+        
+        for path in paths.iter().flatten() {
+            if path.exists() {
+                return true;
+            }
+        }
+        
+        // Also check via which
+        std::process::Command::new("which")
+            .arg("linux-enable-ir-emitter")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    
+    fn check_ir_emitter_configured() -> bool {
+        // Check if config file exists
+        if let Some(home) = dirs::home_dir() {
+            let config_path = home.join(".config/linux-enable-ir-emitter/config.yaml");
+            if config_path.exists() {
+                return true;
+            }
+            let config_path2 = home.join(".config/linux-enable-ir-emitter.toml");
+            if config_path2.exists() {
+                return true;
+            }
+        }
+        
+        // Check system location
+        std::path::Path::new("/etc/linux-enable-ir-emitter/config.yaml").exists()
+    }
+    
+    fn check_pam_ir_configured() -> bool {
+        // Check if PAM is configured with IR emitter
+        if let Ok(content) = std::fs::read_to_string("/etc/pam.d/common-auth") {
+            return content.contains("linux-enable-ir-emitter");
+        }
+        false
+    }
+    
+    fn install_ir_emitter_tool(&self) {
+        self.show_toast("Installing IR emitter tool...");
+        
+        // Run installation in background
+        std::thread::spawn(|| {
+            let home = dirs::home_dir().unwrap_or_default();
+            let bin_dir = home.join(".local/bin");
+            let _ = std::fs::create_dir_all(&bin_dir);
+            
+            // Download and install
+            let result = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    r#"cd /tmp && \
+                    wget -q -O ir-emitter.tar.gz "https://github.com/EmixamPP/linux-enable-ir-emitter/releases/download/6.1.2/linux-enable-ir-emitter-6.1.2-release.systemd.x86-64.tar.gz" && \
+                    tar -C {} --no-same-owner -m -xzf ir-emitter.tar.gz && \
+                    rm ir-emitter.tar.gz"#,
+                    bin_dir.display()
+                ))
+                .output();
+            
+            match result {
+                Ok(output) if output.status.success() => {
+                    eprintln!("[IR Setup] Installation successful");
+                }
+                Ok(output) => {
+                    eprintln!("[IR Setup] Installation failed: {}", String::from_utf8_lossy(&output.stderr));
+                }
+                Err(e) => {
+                    eprintln!("[IR Setup] Installation error: {}", e);
+                }
+            }
+        });
+        
+        self.show_toast("IR emitter tool installation started. Re-open this dialog to continue setup.");
+    }
+    
+    fn run_ir_emitter_configure(&self) {
+        self.show_toast("Opening terminal for IR configuration...");
+        
+        let home = dirs::home_dir().unwrap_or_default();
+        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
+        
+        // Open terminal with configuration command
+        let _ = std::process::Command::new("gnome-terminal")
+            .arg("--")
+            .arg("sudo")
+            .arg(tool_path)
+            .arg("-d")
+            .arg("/dev/video2")
+            .arg("configure")
+            .spawn();
+    }
+    
+    fn setup_pam_ir_integration(&self) {
+        self.show_toast("Setting up PAM integration...");
+        
+        let home = dirs::home_dir().unwrap_or_default();
+        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
+        
+        // Add IR emitter to PAM configuration
+        let cmd = format!(
+            r#"if ! grep -q 'linux-enable-ir-emitter' /etc/pam.d/common-auth; then
+                sudo sed -i '1i auth optional pam_exec.so quiet {} -d /dev/video2 run' /etc/pam.d/common-auth
+            fi"#,
+            tool_path.display()
+        );
+        
+        let _ = std::process::Command::new("gnome-terminal")
+            .arg("--")
+            .arg("bash")
+            .arg("-c")
+            .arg(&cmd)
+            .spawn();
+        
+        self.show_toast("PAM integration configured. IR emitter will activate before face auth.");
+    }
+    
+    fn test_ir_camera(&self) {
+        self.show_toast("Testing IR camera...");
+        
+        let home = dirs::home_dir().unwrap_or_default();
+        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
+        
+        let _ = std::process::Command::new("gnome-terminal")
+            .arg("--")
+            .arg(tool_path)
+            .arg("-d")
+            .arg("/dev/video2")
+            .arg("test")
+            .spawn();
     }
     
     fn show_toast(&self, message: &str) {

@@ -59,7 +59,13 @@ fn can_write_to_system() -> bool {
 pub struct FaceData {
     pub username: String,
     pub encodings: Vec<FaceEncoding>,
+    #[serde(default)]
+    pub ir_encodings: Vec<FaceEncoding>,  // Separate IR camera encodings
+    #[serde(default)]
+    pub rgb_encodings: Vec<FaceEncoding>, // Separate RGB camera encodings
     pub ir_captured: bool,
+    #[serde(default)]
+    pub rgb_captured: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -68,6 +74,8 @@ pub struct FaceData {
 pub struct FaceEncoding {
     pub encoding: Vec<f64>,
     pub pose: String,
+    #[serde(default)]
+    pub camera_type: String,  // "ir" or "rgb"
 }
 
 impl FaceData {
@@ -76,7 +84,10 @@ impl FaceData {
         Self {
             username: username.to_string(),
             encodings: Vec::new(),
+            ir_encodings: Vec::new(),
+            rgb_encodings: Vec::new(),
             ir_captured: false,
+            rgb_captured: false,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -86,8 +97,37 @@ impl FaceData {
         self.encodings.push(FaceEncoding {
             encoding,
             pose: pose.to_string(),
+            camera_type: String::new(),
         });
         self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+    
+    pub fn add_ir_encoding(&mut self, encoding: Vec<f64>, pose: &str) {
+        self.ir_encodings.push(FaceEncoding {
+            encoding,
+            pose: pose.to_string(),
+            camera_type: "ir".to_string(),
+        });
+        self.ir_captured = true;
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+    
+    pub fn add_rgb_encoding(&mut self, encoding: Vec<f64>, pose: &str) {
+        self.rgb_encodings.push(FaceEncoding {
+            encoding,
+            pose: pose.to_string(),
+            camera_type: "rgb".to_string(),
+        });
+        self.rgb_captured = true;
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+    
+    /// Get all encodings (legacy + ir + rgb) for matching
+    pub fn all_encodings(&self) -> Vec<&FaceEncoding> {
+        let mut all: Vec<&FaceEncoding> = self.encodings.iter().collect();
+        all.extend(self.ir_encodings.iter());
+        all.extend(self.rgb_encodings.iter());
+        all
     }
 }
 

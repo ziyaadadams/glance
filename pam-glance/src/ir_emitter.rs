@@ -68,9 +68,9 @@ impl IrEmitter {
         debug!("Enabling IR emitter for {}", self.device);
         
         let output = Command::new("linux-enable-ir-emitter")
-            .arg("run")
             .arg("--device")
             .arg(&self.device)
+            .arg("run")
             .output()
             .context("Failed to run linux-enable-ir-emitter")?;
         
@@ -103,13 +103,14 @@ impl IrEmitter {
         }
         
         let mut cmd = Command::new("linux-enable-ir-emitter");
-        cmd.arg("run");
+        
+        cmd.arg("--device").arg(&self.device);
         
         if let Some(config) = config_file {
             cmd.arg("--config").arg(config);
         }
         
-        cmd.arg("--device").arg(&self.device);
+        cmd.arg("run");
         
         let output = cmd.output()
             .context("Failed to run linux-enable-ir-emitter")?;
