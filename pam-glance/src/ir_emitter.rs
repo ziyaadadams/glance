@@ -1,12 +1,13 @@
 use anyhow::{Result, Context};
 use log::{info, debug, warn};
-use std::process::Command;
+use std::process::{Command, Child, Stdio};
 use std::time::Duration;
 use std::path::Path;
 
 pub struct IrEmitter {
     device: String,
     enabled: bool,
+    child_process: Option<Child>,
 }
 
 impl IrEmitter {
@@ -14,15 +15,42 @@ impl IrEmitter {
         Self {
             device: device.to_string(),
             enabled: false,
+            child_process: None,
         }
     }
     
     pub fn is_installed() -> bool {
-        Command::new("which")
-            .arg("linux-enable-ir-emitter")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        Self::find_executable().is_some()
+    }
+    
+    /// Find the linux-enable-ir-emitter executable in common locations
+    fn find_executable() -> Option<String> {
+        let paths = [
+            "/usr/bin/linux-enable-ir-emitter",
+            "/usr/local/bin/linux-enable-ir-emitter",
+            "/home/ziyaadsmada/.local/bin/linux-enable-ir-emitter",  // User install location
+            "/opt/linux-enable-ir-emitter/linux-enable-ir-emitter",
+        ];
+        
+        for path in &paths {
+            if Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+        
+        // Fallback to PATH lookup
+        if let Ok(output) = Command::new("which").arg("linux-enable-ir-emitter").output() {
+            if output.status.success() {
+                if let Ok(path) = String::from_utf8(output.stdout) {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        return Some(path.to_string());
+                    }
+                }
+            }
+        }
+        
+        None
     }
     
     pub fn is_configured(device: &str) -> bool {
@@ -60,26 +88,36 @@ impl IrEmitter {
     }
     
     pub fn enable(&mut self) -> Result<()> {
-        if !Self::is_installed() {
-            warn!("linux-enable-ir-emitter is not installed");
-            return Ok(());
-        }
+        let executable = match Self::find_executable() {
+            Some(path) => path,
+            None => {
+                warn!("linux-enable-ir-emitter is not installed");
+                return Ok(());
+            }
+        };
         
-        debug!("Enabling IR emitter for {}", self.device);
+        debug!("Enabling IR emitter for {} using {}", self.device, executable);
         
-        let output = Command::new("linux-enable-ir-emitter")
+        // Start the IR emitter as a background process so we can kill it later
+        let child = Command::new(&executable)
             .arg("--device")
             .arg(&self.device)
             .arg("run")
-            .output()
-            .context("Failed to run linux-enable-ir-emitter")?;
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
         
-        if output.status.success() {
-            self.enabled = true;
-            info!("IR emitter enabled for {}", self.device);
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to enable IR emitter: {}", stderr);
+        match child {
+            Ok(c) => {
+                self.child_process = Some(c);
+                self.enabled = true;
+                // Give it a moment to initialize
+                std::thread::sleep(Duration::from_millis(150));
+                info!("IR emitter enabled for {}", self.device);
+            }
+            Err(e) => {
+                warn!("Failed to start IR emitter: {}", e);
+            }
         }
         
         Ok(())
@@ -90,8 +128,25 @@ impl IrEmitter {
             return Ok(());
         }
         
+        // Kill the child process if it exists
+        if let Some(mut child) = self.child_process.take() {
+            debug!("Killing IR emitter process");
+            if let Err(e) = child.kill() {
+                // Process may have already exited
+                debug!("Could not kill IR emitter process: {}", e);
+            }
+            // Wait for it to fully terminate
+            let _ = child.wait();
+        }
+        
+        // Also try to kill any orphaned linux-enable-ir-emitter processes for this device
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg(format!("linux-enable-ir-emitter.*{}", self.device))
+            .output();
+        
         self.enabled = false;
-        debug!("IR emitter disabled");
+        debug!("IR emitter disabled for {}", self.device);
         
         Ok(())
     }
@@ -126,7 +181,9 @@ impl IrEmitter {
 
 impl Drop for IrEmitter {
     fn drop(&mut self) {
-        let _ = self.disable();
+        if self.enabled {
+            let _ = self.disable();
+        }
     }
 }
 
