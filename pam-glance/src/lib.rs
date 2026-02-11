@@ -51,19 +51,19 @@ impl PamModule for PamGlance {
                 PamReturnCode::Success
             }
             auth::AuthResult::NoFaceDetected => {
-                info!("Glance: No face detected for user '{}'", username);
+                info!("Glance: No face detected — use your password");
                 PamReturnCode::Auth_Err
             }
             auth::AuthResult::NoMatch => {
-                info!("Glance: Face not recognized for user '{}'", username);
+                info!("Glance: Face not recognized — use your password");
                 PamReturnCode::Auth_Err
             }
             auth::AuthResult::Timeout => {
-                info!("Glance: Authentication timeout for user '{}'", username);
+                info!("Glance: Timed out — use your password");
                 PamReturnCode::Auth_Err
             }
             auth::AuthResult::Error(e) => {
-                error!("Glance: Authentication error for '{}': {}", username, e);
+                error!("Glance: Error ({}) — use your password", e);
                 PamReturnCode::Auth_Err
             }
         }
@@ -94,7 +94,7 @@ impl Default for PamConfig {
             .unwrap_or_else(|| "/root".to_string());
         
         Self {
-            timeout: 5.0,
+            timeout: 3.0,
             prefer_ir: true,
             data_dir: "/var/lib/glance".to_string(),
             config_file: format!("{}/.config/glance/config.json", home),

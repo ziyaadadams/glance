@@ -135,6 +135,31 @@ impl SmartCamera {
         
         Ok(avg_brightness >= min_brightness)
     }
+
+    /// Open a camera directly by device ID, skipping full detection.
+    /// Use with detect_cameras_fast() for maximum speed.
+    /// Skips test frame read — the caller's frame loop handles failures.
+    pub fn open_direct(info: &CameraInfo) -> Result<Self> {
+        let mut capture = VideoCapture::new(info.device_id, videoio::CAP_V4L2)
+            .context(format!("Failed to open camera video{}", info.device_id))?;
+
+        if !capture.is_opened().unwrap_or(false) {
+            anyhow::bail!("Camera video{} not accessible", info.device_id);
+        }
+
+        capture.set(videoio::CAP_PROP_FRAME_WIDTH, 640.0)?;
+        capture.set(videoio::CAP_PROP_FRAME_HEIGHT, 480.0)?;
+
+        let is_ir = info.camera_type == CameraType::Infrared;
+        info!("Opened camera video{} ({})", info.device_id,
+              if is_ir { "IR" } else { "RGB" });
+
+        Ok(Self {
+            capture,
+            camera_info: info.clone(),
+            is_ir,
+        })
+    }
 }
 
 impl Drop for SmartCamera {
@@ -143,7 +168,7 @@ impl Drop for SmartCamera {
     }
 }
 
-fn detect_cameras() -> Result<Vec<CameraInfo>> {
+pub fn detect_cameras() -> Result<Vec<CameraInfo>> {
     let mut cameras = Vec::new();
     
     let video_dir = Path::new("/sys/class/video4linux");
@@ -198,6 +223,60 @@ fn detect_cameras() -> Result<Vec<CameraInfo>> {
         debug!("  video{}: {} ({:?})", cam.device_id, cam.name, cam.camera_type);
     }
     
+    Ok(cameras)
+}
+
+/// Fast camera detection using sysfs only — no opencv opens.
+/// Returns camera devices based on sysfs metadata (near-instant).
+/// Actual camera verification happens when open_direct() is called.
+pub fn detect_cameras_fast() -> Result<Vec<CameraInfo>> {
+    let mut cameras = Vec::new();
+    let video_dir = Path::new("/sys/class/video4linux");
+
+    if !video_dir.exists() {
+        anyhow::bail!("No video4linux sysfs directory");
+    }
+
+    if let Ok(entries) = std::fs::read_dir(video_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("video") {
+                continue;
+            }
+
+            let device_id: i32 = match name.strip_prefix("video").and_then(|s| s.parse().ok()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Only capture devices (index 0) — skip metadata devices
+            let index_path = format!("/sys/class/video4linux/video{}/index", device_id);
+            if let Ok(index_str) = std::fs::read_to_string(&index_path) {
+                if let Ok(index) = index_str.trim().parse::<i32>() {
+                    if index != 0 {
+                        continue;
+                    }
+                }
+            }
+
+            let name_path = entry.path().join("name");
+            let camera_name = std::fs::read_to_string(name_path)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| format!("Camera {}", device_id));
+
+            let camera_type = detect_camera_type(&camera_name);
+
+            cameras.push(CameraInfo {
+                device_id,
+                device_path: format!("/dev/video{}", device_id),
+                name: camera_name,
+                camera_type,
+            });
+        }
+    }
+
+    cameras.sort_by_key(|c| c.device_id);
+    debug!("Fast-detected {} camera device(s)", cameras.len());
     Ok(cameras)
 }
 

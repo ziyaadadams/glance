@@ -1,4 +1,4 @@
-use crate::camera::{SmartCamera, CameraType};
+use crate::camera::{SmartCamera, CameraType, CameraInfo, detect_cameras_fast};
 use crate::config::GlanceConfig;
 use crate::face::{FaceRecognizer, load_all_faces};
 use crate::ir_emitter::IrEmitter;
@@ -30,30 +30,34 @@ pub struct AuthConfig {
     pub data_dir: PathBuf,
     pub models_dir: PathBuf,
     pub tolerance: f64,
+    pub ir_tolerance: f64,
+    pub rgb_tolerance: f64,
     pub target_user: Option<String>,
     pub min_brightness: f64,
     pub enable_ir_emitter: bool,
     pub ir_device: String,
     pub rgb_device: String,
-    pub max_attempts: u32,
+    pub max_frames_per_camera: u32,
     pub frame_delay_ms: u64,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(5),
+            timeout: Duration::from_secs(3),
             prefer_ir: true,
             data_dir: PathBuf::from("/var/lib/glance"),
             models_dir: PathBuf::from("/usr/share/glance/models"),
             tolerance: 0.6,
+            ir_tolerance: 0.45,
+            rgb_tolerance: 0.50,
             target_user: None,
             min_brightness: 20.0,
             enable_ir_emitter: true,
             ir_device: "/dev/video2".to_string(),
             rgb_device: "/dev/video0".to_string(),
-            max_attempts: 150,       // Max frames to process before giving up
-            frame_delay_ms: 33,      // ~30 FPS, prevents CPU spinning
+            max_frames_per_camera: 15,
+            frame_delay_ms: 33,      // ~30 FPS
         }
     }
 }
@@ -73,12 +77,14 @@ impl AuthConfig {
             } else { 
                 config.recognition.rgb_tolerance 
             },
+            ir_tolerance: config.recognition.ir_tolerance,
+            rgb_tolerance: config.recognition.rgb_tolerance,
             target_user: None,
             min_brightness: config.camera.min_brightness,
             enable_ir_emitter: config.ir_emitter.enabled,
             ir_device: config.camera.ir_device,
             rgb_device: config.camera.rgb_device,
-            max_attempts: 150,
+            max_frames_per_camera: 15,
             frame_delay_ms: 33,
         })
     }
@@ -104,28 +110,23 @@ impl AuthConfig {
 /// This ensures we never block indefinitely even if camera operations hang.
 pub fn authenticate(config: &AuthConfig) -> AuthResult {
     let timeout = config.timeout;
-    
-    // Clone what we need for the thread
     let config_clone = config.clone();
     
     let (tx, rx) = mpsc::channel();
     
-    // Spawn auth worker thread
     let handle = thread::spawn(move || {
         let result = authenticate_inner(&config_clone);
         let _ = tx.send(result);
     });
     
-    // Wait for result with timeout
+    // Hard timeout = configured timeout + 500ms grace
     match rx.recv_timeout(timeout + Duration::from_millis(500)) {
         Ok(result) => {
-            // Clean up thread (it should be done)
             let _ = handle.join();
             result
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            warn!("Authentication hard timeout - worker thread may be stuck");
-            // Try to kill any orphaned IR emitter processes
+            warn!("Hard timeout — killing stale auth worker");
             let _ = std::process::Command::new("pkill")
                 .arg("-f")
                 .arg("linux-enable-ir-emitter")
@@ -133,8 +134,7 @@ pub fn authenticate(config: &AuthConfig) -> AuthResult {
             AuthResult::Timeout
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            error!("Authentication worker thread panicked");
-            // Try to kill any orphaned IR emitter processes
+            error!("Auth worker panicked");
             let _ = std::process::Command::new("pkill")
                 .arg("-f")
                 .arg("linux-enable-ir-emitter")
@@ -144,33 +144,30 @@ pub fn authenticate(config: &AuthConfig) -> AuthResult {
     }
 }
 
-/// Inner authentication function that does the actual work.
-/// This runs in a separate thread so we can enforce a hard timeout.
+/// Fast authentication: detect cameras via sysfs, open directly, try a handful
+/// of frames per camera. Fails fast so PAM falls through to password.
 fn authenticate_inner(config: &AuthConfig) -> AuthResult {
     let start_time = Instant::now();
     let frame_delay = Duration::from_millis(config.frame_delay_ms);
     
-    info!("Starting face authentication (timeout: {:?})", config.timeout);
+    info!("Glance auth starting (timeout: {:?})", config.timeout);
     
-    // Check timeout immediately
-    if start_time.elapsed() >= config.timeout {
-        return AuthResult::Timeout;
-    }
-    
-    // Try to enable IR emitter - we'll manage its lifetime explicitly
-    let mut ir_emitter: Option<IrEmitter> = if config.enable_ir_emitter && config.prefer_ir {
+    // --- IR emitter (always try if enabled — it will skip gracefully if not installed) ---
+    let mut ir_emitter: Option<IrEmitter> = if config.enable_ir_emitter {
         let mut emitter = IrEmitter::new(&config.ir_device);
         if let Err(e) = emitter.enable() {
-            warn!("Failed to enable IR emitter: {}", e);
+            warn!("IR emitter failed: {}", e);
             None
-        } else {
+        } else if emitter.is_running() {
             Some(emitter)
+        } else {
+            debug!("IR emitter not running (tool may not be installed)");
+            None
         }
     } else {
         None
     };
     
-    // Helper macro to cleanup IR emitter before returning
     macro_rules! cleanup_and_return {
         ($result:expr) => {{
             if let Some(ref mut emitter) = ir_emitter {
@@ -181,170 +178,174 @@ fn authenticate_inner(config: &AuthConfig) -> AuthResult {
         }};
     }
     
-    // Check timeout after IR setup
-    if start_time.elapsed() >= config.timeout {
-        return cleanup_and_return!(AuthResult::Timeout);
-    }
-    
-    let recognizer = match FaceRecognizer::new(&config.models_dir, config.tolerance) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to initialize face recognizer: {}", e);
-            return cleanup_and_return!(AuthResult::Error(format!("Face recognizer init failed: {}", e)));
-        }
-    };
-    
-    // Check timeout after recognizer init
-    if start_time.elapsed() >= config.timeout {
-        return cleanup_and_return!(AuthResult::Timeout);
-    }
-    
+    // --- Load registered faces ---
     let registered_faces = match load_registered_faces(config) {
-        Ok(faces) => {
-            if faces.is_empty() {
-                warn!("No registered faces found");
-                return cleanup_and_return!(AuthResult::NoMatch);  // Return NoMatch instead of Error to allow password fallback
-            }
-            faces
+        Ok(faces) if !faces.is_empty() => faces,
+        Ok(_) => {
+            warn!("No registered faces — use your password");
+            return cleanup_and_return!(AuthResult::NoMatch);
         }
         Err(e) => {
-            error!("Failed to load registered faces: {}", e);
-            return cleanup_and_return!(AuthResult::Error(format!("Failed to load faces: {}", e)));
+            error!("Failed to load faces: {}", e);
+            return cleanup_and_return!(AuthResult::Error(format!("Load faces: {}", e)));
         }
     };
     
     info!("Loaded {} registered user(s)", registered_faces.len());
     
-    // Check timeout before camera open (this can be slow/blocking)
     if start_time.elapsed() >= config.timeout {
         return cleanup_and_return!(AuthResult::Timeout);
     }
     
-    // Try to open camera with a quick check
-    let mut camera = match open_camera_with_timeout(config, Duration::from_secs(2)) {
-        Ok(c) => c,
+    // --- Fast camera detection (sysfs only, near-instant) ---
+    let cameras = match detect_cameras_fast() {
+        Ok(c) if !c.is_empty() => c,
+        Ok(_) => {
+            error!("No cameras detected");
+            return cleanup_and_return!(AuthResult::Error("No cameras found".to_string()));
+        }
         Err(e) => {
-            error!("Failed to open camera: {}", e);
-            // Return NoFaceDetected instead of Error so PAM falls through to password
-            return cleanup_and_return!(AuthResult::NoFaceDetected);
+            error!("Camera detection failed: {}", e);
+            return cleanup_and_return!(AuthResult::Error(format!("Detection: {}", e)));
         }
     };
     
-    let camera_type = if camera.is_ir { CameraType::Infrared } else { CameraType::Rgb };
-    info!("Using {:?} camera", camera_type);
+    // Sort: preferred camera type first, but always include both IR and RGB
+    let sorted_cameras: Vec<&CameraInfo> = if config.prefer_ir {
+        cameras.iter()
+            .filter(|c| c.camera_type == CameraType::Infrared)
+            .chain(cameras.iter().filter(|c| c.camera_type == CameraType::Rgb))
+            .chain(cameras.iter().filter(|c| c.camera_type == CameraType::Unknown))
+            .collect()
+    } else {
+        cameras.iter()
+            .filter(|c| c.camera_type == CameraType::Rgb)
+            .chain(cameras.iter().filter(|c| c.camera_type == CameraType::Infrared))
+            .chain(cameras.iter().filter(|c| c.camera_type == CameraType::Unknown))
+            .collect()
+    };
     
-    // Skip brightness check to save time, go straight to detection
-    
-    let mut frames_processed: u32 = 0;
-    let mut faces_detected = 0;
-    let mut consecutive_failures: u32 = 0;
-    const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-    
-    loop {
-        // Check timeout at start of each iteration
+    // --- Try each camera quickly ---
+    for cam_info in &sorted_cameras {
         if start_time.elapsed() >= config.timeout {
-            info!("Authentication timeout ({} frames, {} faces)", 
-                  frames_processed, faces_detected);
-            return cleanup_and_return!(AuthResult::Timeout);
+            break;
         }
         
-        // Check max attempts to prevent infinite loops
-        if frames_processed >= config.max_attempts {
-            info!("Max attempts reached ({} frames)", frames_processed);
-            return cleanup_and_return!(AuthResult::Timeout);
-        }
+        let is_ir = cam_info.camera_type == CameraType::Infrared;
+        let tolerance = if is_ir { config.ir_tolerance } else { config.rgb_tolerance };
+        let camera_label = if is_ir { "IR" } else { "RGB" };
         
-        // Rate limiting - sleep between frames to prevent CPU spinning
-        if frames_processed > 0 {
-            thread::sleep(frame_delay);
-        }
+        info!("Trying {} camera video{} (tolerance: {:.2})", 
+              camera_label, cam_info.device_id, tolerance);
         
-        // Check timeout again after sleep
-        if start_time.elapsed() >= config.timeout {
-            return cleanup_and_return!(AuthResult::Timeout);
-        }
-        
-        let frame = match camera.read() {
-            Ok(f) => {
-                consecutive_failures = 0;
-                f
-            }
+        // Init recognizer
+        let recognizer = match FaceRecognizer::new(&config.models_dir, tolerance) {
+            Ok(r) => r,
             Err(e) => {
-                consecutive_failures += 1;
-                debug!("Frame capture failed ({}): {}", consecutive_failures, e);
-                
-                // If camera keeps failing, give up
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    error!("Too many consecutive camera failures");
-                    return cleanup_and_return!(AuthResult::NoFaceDetected);
+                error!("Recognizer init failed: {}", e);
+                continue;
+            }
+        };
+        
+        // Open camera directly — no redundant detection
+        let mut camera = match SmartCamera::open_direct(cam_info) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("{} camera open failed: {}", camera_label, e);
+                continue;
+            }
+        };
+        
+        // Use actual camera type (in case name detection was wrong)
+        let camera_type = if camera.is_ir { CameraType::Infrared } else { CameraType::Rgb };
+        let effective_tolerance = if camera.is_ir { config.ir_tolerance } else { config.rgb_tolerance };
+        let recognizer = if (effective_tolerance - tolerance).abs() > 0.001 {
+            match FaceRecognizer::new(&config.models_dir, effective_tolerance) {
+                Ok(r) => r,
+                Err(_) => recognizer,
+            }
+        } else {
+            recognizer
+        };
+        
+        // --- Quick frame loop ---
+        let mut frames: u32 = 0;
+        let mut faces_seen: u32 = 0;
+        let mut consecutive_failures: u32 = 0;
+        
+        loop {
+            if start_time.elapsed() >= config.timeout {
+                info!("{}: timeout after {} frames", camera_label, frames);
+                break;
+            }
+            
+            if frames >= config.max_frames_per_camera {
+                info!("{}: {} frames processed, {} faces — moving on",
+                      camera_label, frames, faces_seen);
+                break;
+            }
+            
+            if consecutive_failures >= 5 {
+                warn!("{}: too many read failures", camera_label);
+                break;
+            }
+            
+            if frames > 0 {
+                thread::sleep(frame_delay);
+            }
+            
+            let frame = match camera.read() {
+                Ok(f) => {
+                    consecutive_failures = 0;
+                    f
                 }
-                
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-        };
-        
-        frames_processed += 1;
-        
-        let faces = match recognizer.detect_faces(&frame) {
-            Ok(f) => f,
-            Err(e) => {
-                debug!("Face detection failed: {}", e);
-                continue;
-            }
-        };
-        
-        if faces.is_empty() {
-            continue;
-        }
-        
-        faces_detected += 1;
-        debug!("Detected {} face(s) in frame {}", faces.len(), frames_processed);
-        
-        for face in &faces {
-            let faces_to_check: Vec<_> = if let Some(ref target) = config.target_user {
-                registered_faces.iter()
-                    .filter(|(u, _)| u == target)
-                    .cloned()
-                    .collect()
-            } else {
-                registered_faces.clone()
+                Err(_) => {
+                    consecutive_failures += 1;
+                    continue;
+                }
             };
             
-            if let Some((username, distance)) = recognizer.match_face(&face.encoding, &faces_to_check) {
-                let elapsed = start_time.elapsed();
-                info!("Authentication successful for '{}' in {:?} (distance: {:.4})", 
-                      username, elapsed, distance);
+            frames += 1;
+            
+            let faces = match recognizer.detect_faces(&frame) {
+                Ok(f) if !f.is_empty() => f,
+                _ => continue,
+            };
+            
+            faces_seen += 1;
+            debug!("{}: {} face(s) in frame {}", camera_label, faces.len(), frames);
+            
+            for face in &faces {
+                let faces_to_check: Vec<_> = if let Some(ref target) = config.target_user {
+                    registered_faces.iter()
+                        .filter(|(u, _)| u == target)
+                        .cloned()
+                        .collect()
+                } else {
+                    registered_faces.clone()
+                };
                 
-                return cleanup_and_return!(AuthResult::Success {
-                    username,
-                    confidence: 1.0 - distance,
-                    camera_type,
-                });
+                if let Some((username, distance)) = recognizer.match_face(&face.encoding, &faces_to_check) {
+                    let elapsed = start_time.elapsed();
+                    info!("Authenticated '{}' via {:?} in {:?} (distance: {:.4})",
+                          username, camera_type, elapsed, distance);
+                    
+                    return cleanup_and_return!(AuthResult::Success {
+                        username,
+                        confidence: 1.0 - distance,
+                        camera_type,
+                    });
+                }
             }
         }
+        
+        drop(camera);
     }
-}
-
-/// Open camera with a timeout to prevent blocking indefinitely
-fn open_camera_with_timeout(config: &AuthConfig, timeout: Duration) -> Result<SmartCamera> {
-    let (tx, rx) = mpsc::channel();
     
-    let prefer_ir = config.prefer_ir;
-    let ir_device = config.ir_device.clone();
-    let rgb_device = config.rgb_device.clone();
-    
-    thread::spawn(move || {
-        let result = SmartCamera::open(prefer_ir, &ir_device, &rgb_device);
-        let _ = tx.send(result);
-    });
-    
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result,
-        Err(_) => {
-            anyhow::bail!("Camera open timeout")
-        }
-    }
+    // All cameras tried — face auth failed
+    let elapsed = start_time.elapsed();
+    info!("Face not recognized after {:?} — use your password", elapsed);
+    cleanup_and_return!(AuthResult::NoMatch)
 }
 
 fn load_registered_faces(config: &AuthConfig) -> Result<Vec<(String, Vec<Vec<f64>>)>> {

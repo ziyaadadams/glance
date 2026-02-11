@@ -199,9 +199,9 @@ impl GlanceWindow {
         ));
         
         let btn_ir_setup = gtk::Button::builder()
-            .label("IR Camera Setup")
+            .label("Recalibrate IR Camera")
             .css_classes(["pill"])
-            .visible(false)  // Hidden by default, shown if needed
+            .visible(true)  // Always visible — users need this after kernel updates
             .build();
         btn_ir_setup.connect_clicked(glib::clone!(
             #[weak(rename_to = window)] self,
@@ -572,10 +572,14 @@ impl GlanceWindow {
                 lbl.set_label(&label);
             }
             
-            // Show IR setup button only for RGB cameras (user might want to configure IR)
-            // Hide it if we already detected an IR camera (it's working)
+            // Always show IR setup button - user may need to recalibrate after kernel updates
             if let Some(ref btn) = *imp.btn_ir_setup.borrow() {
-                btn.set_visible(!info.is_ir);
+                btn.set_visible(true);
+                if info.is_ir {
+                    btn.set_label("Recalibrate IR Camera");
+                } else {
+                    btn.set_label("Set Up IR Camera");
+                }
             }
             
             *imp.camera_info.borrow_mut() = Some(info);
@@ -602,11 +606,32 @@ impl GlanceWindow {
         let username = imp.current_user.borrow().clone();
         
         if let Some(face_data) = load_face_data(&username) {
-            let pose_count = face_data.encodings.len();
-            let ir_text = if face_data.ir_captured { " (IR)" } else { "" };
+            let ir_count = face_data.ir_encodings.len();
+            let rgb_count = face_data.rgb_encodings.len();
+            let legacy_count = face_data.encodings.len();
+            
+            let mut parts = Vec::new();
+            if ir_count > 0 { parts.push(format!("{} IR", ir_count)); }
+            if rgb_count > 0 { parts.push(format!("{} RGB", rgb_count)); }
+            if parts.is_empty() && legacy_count > 0 {
+                parts.push(format!("{} legacy", legacy_count));
+            }
+            
+            let status_text = if parts.is_empty() {
+                "Face registered (no encodings found)".to_string()
+            } else {
+                format!("Face registered: {} capture(s)", parts.join(", "))
+            };
+            
+            // Warn if RGB is missing — fallback won't work
+            let warning = if rgb_count == 0 && ir_count > 0 {
+                "\n⚠️ No RGB backup — if IR stops working, face auth will fail."
+            } else {
+                ""
+            };
             
             if let Some(ref lbl) = *imp.lbl_registered_status.borrow() {
-                lbl.set_label(&format!("Face registered with {} pose(s){}", pose_count, ir_text));
+                lbl.set_label(&format!("{}{}", status_text, warning));
             }
             if let Some(ref btn) = *imp.btn_add_face.borrow() {
                 btn.set_label("Update Face");
@@ -1294,10 +1319,15 @@ impl GlanceWindow {
             actions_box.append(&install_btn);
         }
         
-        // Configure button
-        if ir_tool_installed && !ir_configured {
+        // Configure / Reconfigure button - always available when tool is installed
+        if ir_tool_installed {
+            let config_label = if ir_configured {
+                "🔄 Recalibrate IR Emitter"
+            } else {
+                "⚙️ Configure IR Emitter"
+            };
             let config_btn = gtk::Button::builder()
-                .label("⚙️ Configure IR Emitter")
+                .label(config_label)
                 .css_classes(["suggested-action"])
                 .build();
             let dialog_weak = dialog.downgrade();
@@ -1313,7 +1343,7 @@ impl GlanceWindow {
             actions_box.append(&config_btn);
             
             let note = gtk::Label::builder()
-                .label("This will open a terminal. Answer Y/N when the IR LED flashes.")
+                .label("This will open a terminal. Run this after kernel updates if the IR camera stops working.\nAnswer Y/N when the IR LED flashes.")
                 .wrap(true)
                 .css_classes(["dim-label"])
                 .build();
@@ -1439,121 +1469,285 @@ impl GlanceWindow {
     }
     
     fn check_ir_emitter_configured() -> bool {
-        // Check if config file exists
-        if let Some(home) = dirs::home_dir() {
-            let config_path = home.join(".config/linux-enable-ir-emitter/config.yaml");
-            if config_path.exists() {
-                return true;
+        // v6.x stores config as .ini files in /etc/linux-enable-ir-emitter/
+        let config_dir = std::path::Path::new("/etc/linux-enable-ir-emitter");
+        if config_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(config_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().map_or(false, |e| e == "ini") {
+                        return true;
+                    }
+                }
             }
-            let config_path2 = home.join(".config/linux-enable-ir-emitter.toml");
-            if config_path2.exists() {
+        }
+        
+        // v7+ stores config as .toml in $HOME/.config/
+        if let Some(home) = dirs::home_dir() {
+            if home.join(".config/linux-enable-ir-emitter.toml").exists() {
                 return true;
             }
         }
         
-        // Check system location
-        std::path::Path::new("/etc/linux-enable-ir-emitter/config.yaml").exists()
+        false
     }
     
     fn check_pam_ir_configured() -> bool {
-        // Check if PAM is configured with IR emitter
+        // Check if our PAM module is installed and enabled
         if let Ok(content) = std::fs::read_to_string("/etc/pam.d/common-auth") {
-            return content.contains("linux-enable-ir-emitter");
+            // Check for pam_glance.so (our module that handles IR + RGB auth)
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with('#') && trimmed.contains("pam_glance.so") {
+                    return true;
+                }
+            }
         }
         false
     }
     
     fn install_ir_emitter_tool(&self) {
-        self.show_toast("Installing IR emitter tool...");
+        self.show_toast("Opening terminal to install IR emitter tool...");
         
-        // Run installation in background
-        std::thread::spawn(|| {
-            let home = dirs::home_dir().unwrap_or_default();
-            let bin_dir = home.join(".local/bin");
-            let _ = std::fs::create_dir_all(&bin_dir);
-            
-            // Download and install
-            let result = std::process::Command::new("bash")
-                .arg("-c")
-                .arg(format!(
-                    r#"cd /tmp && \
-                    wget -q -O ir-emitter.tar.gz "https://github.com/EmixamPP/linux-enable-ir-emitter/releases/download/6.1.2/linux-enable-ir-emitter-6.1.2-release.systemd.x86-64.tar.gz" && \
-                    tar -C {} --no-same-owner -m -xzf ir-emitter.tar.gz && \
-                    rm ir-emitter.tar.gz"#,
-                    bin_dir.display()
-                ))
-                .output();
-            
-            match result {
-                Ok(output) if output.status.success() => {
-                    eprintln!("[IR Setup] Installation successful");
-                }
-                Ok(output) => {
-                    eprintln!("[IR Setup] Installation failed: {}", String::from_utf8_lossy(&output.stderr));
-                }
-                Err(e) => {
-                    eprintln!("[IR Setup] Installation error: {}", e);
-                }
-            }
-        });
-        
-        self.show_toast("IR emitter tool installation started. Re-open this dialog to continue setup.");
+        let script = r#"#!/bin/bash
+echo 'Installing linux-enable-ir-emitter...'
+echo ''
+cd /tmp
+wget -q --show-progress -O ir-emitter.tar.gz \
+  'https://github.com/EmixamPP/linux-enable-ir-emitter/releases/download/6.1.2/linux-enable-ir-emitter-6.1.2-release.systemd.x86-64.tar.gz'
+if sudo tar -C / --no-same-owner -m -xzf ir-emitter.tar.gz; then
+    rm -f ir-emitter.tar.gz
+    echo ''
+    echo '✅ Installed successfully!'
+    linux-enable-ir-emitter --version 2>&1 | head -1
+else
+    echo ''
+    echo '❌ Installation failed.'
+fi
+echo ''
+read -r -p 'Press Enter to close...'
+"#;
+        match Self::spawn_terminal_script(script) {
+            Ok(_) => {},
+            Err(e) => self.show_toast(&format!("Could not open terminal: {}", e)),
+        }
     }
     
     fn run_ir_emitter_configure(&self) {
-        self.show_toast("Opening terminal for IR configuration...");
+        self.show_toast("Opening terminal for IR calibration...");
         
-        let home = dirs::home_dir().unwrap_or_default();
-        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
+        let tool = Self::find_ir_emitter_tool();
         
-        // Open terminal with configuration command
-        let _ = std::process::Command::new("gnome-terminal")
-            .arg("--")
-            .arg("sudo")
-            .arg(tool_path)
-            .arg("-d")
-            .arg("/dev/video2")
-            .arg("configure")
-            .spawn();
+        // The tool auto-detects the camera, so we don't force -d.
+        // Using plain "sudo <tool> configure" — exactly what works in a terminal.
+        let script = format!(r#"#!/bin/bash
+echo '╔══════════════════════════════════════╗'
+echo '║     IR Camera Calibration            ║'
+echo '╚══════════════════════════════════════╝'
+echo ''
+
+# Ensure config and log directories exist
+sudo mkdir -p /etc/linux-enable-ir-emitter
+sudo mkdir -p /var/local/log/linux-enable-ir-emitter
+sudo chmod 777 /var/local/log/linux-enable-ir-emitter 2>/dev/null
+
+echo 'Stand in front of and close to the camera.'
+echo 'Make sure the room is well lit.'
+echo ''
+echo 'You will be asked if the IR emitter is flashing.'
+echo 'Answer "yes" or "no" for each attempt.'
+echo ''
+echo 'Starting calibration...'
+echo ''
+
+sudo {tool} configure
+
+echo ''
+if [ -f /etc/linux-enable-ir-emitter/*.ini ] 2>/dev/null; then
+    echo '✅ Calibration successful! Config saved.'
+    echo ''
+    echo 'Testing IR emitter...'
+    sudo {tool} run
+    sleep 2
+    echo ''
+    echo 'If you see the IR LED glowing, you are all set!'
+else
+    echo 'ℹ️  Calibration finished. Verifying...'
+    sudo {tool} test 2>&1
+fi
+
+echo ''
+read -r -p 'Press Enter to close...'
+"#, tool = tool);
+        match Self::spawn_terminal_script(&script) {
+            Ok(_) => {},
+            Err(e) => self.show_toast(&format!("Could not open terminal: {}", e)),
+        }
     }
     
     fn setup_pam_ir_integration(&self) {
         self.show_toast("Setting up PAM integration...");
         
-        let home = dirs::home_dir().unwrap_or_default();
-        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
-        
-        // Add IR emitter to PAM configuration
-        let cmd = format!(
-            r#"if ! grep -q 'linux-enable-ir-emitter' /etc/pam.d/common-auth; then
-                sudo sed -i '1i auth optional pam_exec.so quiet {} -d /dev/video2 run' /etc/pam.d/common-auth
-            fi"#,
-            tool_path.display()
-        );
-        
-        let _ = std::process::Command::new("gnome-terminal")
-            .arg("--")
-            .arg("bash")
-            .arg("-c")
-            .arg(&cmd)
-            .spawn();
-        
-        self.show_toast("PAM integration configured. IR emitter will activate before face auth.");
+        let script = r#"#!/bin/bash
+echo 'Checking PAM configuration...'
+if grep -q 'pam_glance.so' /etc/pam.d/common-auth; then
+    echo '✅ pam_glance.so is already configured.'
+else
+    echo 'Adding pam_glance.so to /etc/pam.d/common-auth...'
+    sudo sed -i '1i auth sufficient pam_glance.so' /etc/pam.d/common-auth
+    echo '✅ Done! Face auth is now enabled.'
+fi
+echo ''
+echo 'The Glance PAM module handles the IR emitter'
+echo 'automatically — no separate pam_exec line needed.'
+echo ''
+read -r -p 'Press Enter to close...'
+"#;
+        match Self::spawn_terminal_script(script) {
+            Ok(_) => {},
+            Err(e) => self.show_toast(&format!("Could not open terminal: {}", e)),
+        }
     }
     
     fn test_ir_camera(&self) {
         self.show_toast("Testing IR camera...");
         
-        let home = dirs::home_dir().unwrap_or_default();
-        let tool_path = home.join(".local/bin/linux-enable-ir-emitter");
+        let tool = Self::find_ir_emitter_tool();
+        let ir_device = Camera::detect_ir_camera()
+            .map(|c| format!("/dev/video{}", c.device_id))
+            .unwrap_or_else(|| "/dev/video2".to_string());
         
-        let _ = std::process::Command::new("gnome-terminal")
-            .arg("--")
-            .arg(tool_path)
-            .arg("-d")
-            .arg("/dev/video2")
-            .arg("test")
-            .spawn();
+        let script = format!(r#"#!/bin/bash
+echo 'Testing IR emitter on {device}...'
+echo ''
+if sudo {tool} -d {device} run; then
+    echo '✅ IR emitter enabled!'
+else
+    echo '❌ No config found — run calibration first.'
+fi
+echo ''
+{tool} -d {device} test
+echo ''
+read -r -p 'Press Enter to close...'
+"#, tool = tool, device = ir_device);
+        match Self::spawn_terminal_script(&script) {
+            Ok(_) => {},
+            Err(e) => self.show_toast(&format!("Could not open terminal: {}", e)),
+        }
+    }
+    
+    /// Check if a command exists on PATH
+    fn command_exists(name: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Write a bash script to a temp file and open the user's default terminal to run it.
+    /// The temp file approach avoids all quoting/escaping issues when passing complex
+    /// scripts through xdg-terminal-exec / ptyxis / ghostty argument chains.
+    fn spawn_terminal_script(script: &str) -> std::io::Result<std::process::Child> {
+        use std::io::Write;
+
+        // Write script to a temp file
+        let script_path = std::env::temp_dir().join("glance-terminal-script.sh");
+        {
+            let mut f = std::fs::File::create(&script_path)?;
+            f.write_all(script.as_bytes())?;
+        }
+
+        // Make it executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        let path_str = script_path.to_string_lossy().to_string();
+
+        // Method 1: xdg-terminal-exec (XDG standard — respects user's default terminal)
+        if Self::command_exists("xdg-terminal-exec") {
+            return std::process::Command::new("xdg-terminal-exec")
+                .arg("bash")
+                .arg(&path_str)
+                .spawn();
+        }
+
+        // Method 2: $TERMINAL environment variable
+        if let Ok(term) = std::env::var("TERMINAL") {
+            if !term.is_empty() && Self::command_exists(&term) {
+                return std::process::Command::new(&term)
+                    .arg("-e")
+                    .arg("bash")
+                    .arg(&path_str)
+                    .spawn();
+            }
+        }
+
+        // Method 3: x-terminal-emulator (Debian/Ubuntu alternatives system)
+        if Self::command_exists("x-terminal-emulator") {
+            return std::process::Command::new("x-terminal-emulator")
+                .arg("-e")
+                .arg("bash")
+                .arg(&path_str)
+                .spawn();
+        }
+
+        // Method 4: Try common terminals as last resort
+        let fallbacks: &[(&str, &[&str])] = &[
+            ("gnome-terminal", &["--", "bash"]),
+            ("kgx", &["-e", "bash"]),
+            ("ptyxis", &["--", "bash"]),
+            ("konsole", &["-e", "bash"]),
+            ("xfce4-terminal", &["-e", "bash"]),
+            ("mate-terminal", &["-e", "bash"]),
+            ("tilix", &["-e", "bash"]),
+            ("kitty", &["bash"]),
+            ("alacritty", &["-e", "bash"]),
+            ("ghostty", &["-e", "bash"]),
+            ("wezterm", &["start", "--", "bash"]),
+            ("foot", &["bash"]),
+            ("xterm", &["-e", "bash"]),
+        ];
+
+        for (name, args) in fallbacks {
+            if Self::command_exists(name) {
+                let mut cmd = std::process::Command::new(name);
+                for a in *args {
+                    cmd.arg(a);
+                }
+                cmd.arg(&path_str);
+                return cmd.spawn();
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No terminal emulator found. Please install one or set $TERMINAL.",
+        ))
+    }
+
+    /// Find the linux-enable-ir-emitter binary
+    fn find_ir_emitter_tool() -> String {
+        let paths = [
+            "/usr/local/bin/linux-enable-ir-emitter",
+            "/usr/bin/linux-enable-ir-emitter",
+        ];
+        for p in &paths {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        if let Some(home) = dirs::home_dir() {
+            let user_path = home.join(".local/bin/linux-enable-ir-emitter");
+            if user_path.exists() {
+                return user_path.to_string_lossy().to_string();
+            }
+        }
+        "linux-enable-ir-emitter".to_string()
     }
     
     fn show_toast(&self, message: &str) {

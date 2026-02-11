@@ -91,12 +91,12 @@ impl IrEmitter {
         let executable = match Self::find_executable() {
             Some(path) => path,
             None => {
-                warn!("linux-enable-ir-emitter is not installed");
+                debug!("linux-enable-ir-emitter not installed — skipping");
                 return Ok(());
             }
         };
         
-        debug!("Enabling IR emitter for {} using {}", self.device, executable);
+        info!("Enabling IR emitter for {} using {}", self.device, executable);
         
         // Start the IR emitter as a background process so we can kill it later
         let child = Command::new(&executable)
@@ -121,6 +121,11 @@ impl IrEmitter {
         }
         
         Ok(())
+    }
+    
+    /// Check if the emitter process was started and is still alive
+    pub fn is_running(&self) -> bool {
+        self.enabled && self.child_process.is_some()
     }
     
     pub fn disable(&mut self) -> Result<()> {
