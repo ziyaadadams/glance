@@ -1,6 +1,0 @@
-face_recognition
-opencv-python
-numpy
-PyGObject
-PySide6
-Pillow

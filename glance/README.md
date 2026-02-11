@@ -1,39 +1,41 @@
-# FaceRec - Rust + Blueprint
+# Glance — GTK4 Application
 
-A modern GNOME application for Windows Hello-style facial recognition on Linux.
+The graphical interface for Glance. A modern GNOME application built with GTK4 and Libadwaita for managing facial recognition enrollment and IR camera setup.
 
-## Status: Work in Progress 🚧
+## Features
 
-The Rust + Blueprint version is under development. The full project structure is in place, but the window.rs needs more work to handle threading correctly with GTK's main loop.
-
-**Current Python version is fully functional** - use that for now.
+- **Face Enrollment**: Capture multiple angles of your face for recognition
+- **IR Camera Setup**: Built-in wizard for configuring IR emitters via `linux-enable-ir-emitter`
+- **Camera Preview**: Live camera feed with face detection overlay
+- **Preferences**: Configure tolerances, camera selection, and PAM integration
+- **Default Terminal Support**: Opens the user's default terminal for IR calibration tasks via `xdg-terminal-exec`
 
 ## Architecture
 
 ```
-facerec-app/
-├── Cargo.toml              # Rust dependencies
-├── meson.build             # GNOME build system
+glance/
+├── Cargo.toml
 ├── data/
 │   ├── ui/                 # Blueprint UI files
 │   │   ├── window.blp
 │   │   ├── add-face-dialog.blp
 │   │   ├── preferences.blp
 │   │   └── ir-setup-dialog.blp
-│   ├── style.css           # Custom styles
-│   ├── facerec.gresource.xml
-│   ├── io.github.facerec.desktop
-│   ├── io.github.facerec.metainfo.xml
+│   ├── style.css
+│   ├── glance.gresource.xml
+│   ├── io.github.glance.Glance.desktop
+│   ├── io.github.glance.Glance.metainfo.xml
 │   └── icons/
 └── src/
     ├── main.rs             # Entry point
     ├── app.rs              # GtkApplication
-    ├── window.rs           # Main window
+    ├── window.rs           # Main window + IR setup logic
     ├── camera.rs           # Camera handling + IR detection
-    ├── face.rs             # Face detection & encoding
-    ├── pose.rs             # Head pose detection
-    ├── storage.rs          # Face data storage
+    ├── face.rs             # Face detection & encoding (dlib)
+    ├── models.rs           # Data models
+    ├── storage.rs          # Face data storage (JSON)
     └── widgets/
+        ├── mod.rs
         └── face_guide.rs   # Face guide overlay widget
 ```
 
@@ -42,86 +44,38 @@ facerec-app/
 ### Prerequisites
 
 ```bash
-# Rust
+# Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# GTK4 and Libadwaita development files
-sudo apt install libgtk-4-dev libadwaita-1-dev
-
-# Blueprint compiler
-sudo apt install blueprint-compiler
-
-# OpenCV
-sudo apt install libopencv-dev clang libclang-dev
-
-# dlib (for face recognition)
-sudo apt install libdlib-dev
-
-# Meson build system
-sudo apt install meson ninja-build
+# GTK4, Libadwaita, and OpenCV development files
+sudo apt install libgtk-4-dev libadwaita-1-dev libopencv-dev clang libclang-dev
 ```
 
-### Build with Meson (recommended)
+### Build
 
 ```bash
-meson setup build
-meson compile -C build
-meson install -C build
-```
-
-### Build with Cargo (development)
-
-```bash
-# First, compile Blueprint files manually
-blueprint-compiler compile data/ui/window.blp > data/ui/window.ui
-blueprint-compiler compile data/ui/add-face-dialog.blp > data/ui/add-face-dialog.ui
-blueprint-compiler compile data/ui/preferences.blp > data/ui/preferences.ui
-blueprint-compiler compile data/ui/ir-setup-dialog.blp > data/ui/ir-setup-dialog.ui
-
-# Compile resources
-glib-compile-resources data/facerec.gresource.xml --target=data/facerec.gresource
-
-# Build
 cargo build --release
+```
+
+### Install
+
+```bash
+sudo cp target/release/glance /usr/local/bin/
 ```
 
 ### Run
 
 ```bash
-# After meson install
-facerec
-
-# Or directly
-./target/release/facerec
+glance
 ```
-
-## Features
-
-- **IR Camera Support**: Automatically detects and uses infrared cameras for secure authentication
-- **Multi-Pose Capture**: Captures 5 different head angles for better accuracy
-- **Head Pose Detection**: Requires actual head movement (not just holding still)
-- **Smoothed UI**: Consistent guidance messages without flickering
-- **PAM Integration**: Works with the existing Rust PAM module
 
 ## Technology Stack
 
-- **Rust**: Memory-safe, fast system programming
-- **GTK4**: Modern Linux GUI toolkit
-- **Libadwaita**: GNOME HIG compliance
-- **Blueprint**: Declarative UI definition
+- **Rust**: Memory-safe systems programming
+- **GTK4 + Libadwaita**: Modern GNOME UI
 - **OpenCV**: Camera capture and image processing
 - **dlib**: Face detection and recognition
 
-## vs Python Version
-
-| Feature | Python | Rust |
-|---------|--------|------|
-| Startup time | ~2s | ~0.3s |
-| Memory usage | ~150MB | ~40MB |
-| Type safety | Runtime errors | Compile-time |
-| Dependencies | Many Python packages | Single binary |
-| PAM integration | Shell wrapper | Native |
-
 ## License
 
-MIT
+GPL-3.0

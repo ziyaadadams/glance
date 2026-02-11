@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.70+-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License">
   <img src="https://img.shields.io/badge/tested-Ubuntu%2025.10-E95420" alt="Ubuntu">
@@ -173,23 +173,33 @@ If nothing went wrong, we should be able to run sudo by just showing your face. 
 | **RGB Camera Fallback** | Works with standard webcams when IR is unavailable |
 | **PAM Integration** | Seamless authentication for sudo, GDM, login, and screen lock |
 | **GTK4 Interface** | Modern GNOME-style application using Libadwaita |
-| **Fast Authentication** | Native Rust PAM module with ~100-300ms authentication time |
+| **Fast Authentication** | Native Rust PAM module with ~3s timeout, dual-camera fallback |
 | **Secure Storage** | Face encodings stored as 128-dimensional vectors, not images |
 
 ## IR Camera Configuration
 
-For Windows Hello-compatible IR cameras, you may need to configure the IR emitter:
+For Windows Hello-compatible IR cameras, you may need to configure the IR emitter.
+
+You can do this from the Glance app (Preferences → IR Camera Setup → Recalibrate IR Camera), or manually:
 
 ```bash
-# Install the IR emitter tool
-pip3 install linux-enable-ir-emitter
+# Install linux-enable-ir-emitter (if not already installed)
+cd /tmp
+wget -O ir-emitter.tar.gz \
+  'https://github.com/EmixamPP/linux-enable-ir-emitter/releases/download/6.1.2/linux-enable-ir-emitter-6.1.2-release.systemd.x86-64.tar.gz'
+sudo tar -C / --no-same-owner -m -xzf ir-emitter.tar.gz
 
-# Configure the emitter (interactive)
+# Ensure config directory exists
+sudo mkdir -p /etc/linux-enable-ir-emitter
+
+# Configure the emitter (interactive — answer yes/no for each flash)
 sudo linux-enable-ir-emitter configure
 
-# Enable on boot
-sudo linux-enable-ir-emitter boot enable
+# Test it
+sudo linux-enable-ir-emitter run
 ```
+
+The PAM module automatically enables/disables the IR emitter during authentication — no separate boot service needed.
 
 ## Known Limitations
 
