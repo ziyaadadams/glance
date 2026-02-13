@@ -1537,19 +1537,37 @@ read -r -p 'Press Enter to close...'
         
         let tool = Self::find_ir_emitter_tool();
         
-        // The tool auto-detects the camera, so we don't force -d.
-        // Using plain "sudo <tool> configure" — exactly what works in a terminal.
+        // CRITICAL: Every bare "sudo" triggers PAM auth, which runs pam_glance.so,
+        // which tries to open the camera — conflicting with calibration.
+        // Fix: cache sudo credentials ONCE upfront with "sudo -v", then use "sudo -n"
+        // (non-interactive, uses cached creds, no PAM) for all subsequent commands.
+        // A background keepalive prevents credential expiry during long calibrations.
         let script = format!(r#"#!/bin/bash
 echo '╔══════════════════════════════════════╗'
 echo '║     IR Camera Calibration            ║'
 echo '╚══════════════════════════════════════╝'
 echo ''
 
-# Ensure config and log directories exist
-sudo mkdir -p /etc/linux-enable-ir-emitter
-sudo mkdir -p /var/local/log/linux-enable-ir-emitter
-sudo chmod 777 /var/local/log/linux-enable-ir-emitter 2>/dev/null
+# Cache sudo credentials upfront (this is the ONLY time PAM auth runs).
+# At this point the camera is free, so pam_glance won't conflict.
+echo 'Authenticating...'
+if ! sudo -v; then
+    echo '❌ Authentication failed.'
+    read -r -p 'Press Enter to close...'
+    exit 1
+fi
 
+# Keep sudo credentials alive in background (renew every 50s, timeout is usually 60s)
+( while true; do sudo -n -v 2>/dev/null; sleep 50; done ) &
+KEEPALIVE_PID=$!
+trap "kill $KEEPALIVE_PID 2>/dev/null" EXIT
+
+# Ensure config and log directories exist (sudo -n = no PAM, uses cached creds)
+sudo -n mkdir -p /etc/linux-enable-ir-emitter
+sudo -n mkdir -p /var/local/log/linux-enable-ir-emitter
+sudo -n chmod 777 /var/local/log/linux-enable-ir-emitter 2>/dev/null
+
+echo ''
 echo 'Stand in front of and close to the camera.'
 echo 'Make sure the room is well lit.'
 echo ''
@@ -1559,20 +1577,20 @@ echo ''
 echo 'Starting calibration...'
 echo ''
 
-sudo {tool} configure
+sudo -n {tool} configure
 
 echo ''
-if [ -f /etc/linux-enable-ir-emitter/*.ini ] 2>/dev/null; then
+if ls /etc/linux-enable-ir-emitter/*.ini 1>/dev/null 2>&1; then
     echo '✅ Calibration successful! Config saved.'
     echo ''
     echo 'Testing IR emitter...'
-    sudo {tool} run
+    sudo -n {tool} run
     sleep 2
     echo ''
     echo 'If you see the IR LED glowing, you are all set!'
 else
     echo 'ℹ️  Calibration finished. Verifying...'
-    sudo {tool} test 2>&1
+    sudo -n {tool} test 2>&1
 fi
 
 echo ''
@@ -1619,13 +1637,21 @@ read -r -p 'Press Enter to close...'
         let script = format!(r#"#!/bin/bash
 echo 'Testing IR emitter on {device}...'
 echo ''
-if sudo {tool} -d {device} run; then
+
+# Cache sudo creds once upfront (avoids PAM/camera conflict)
+if ! sudo -v; then
+    echo '❌ Authentication failed.'
+    read -r -p 'Press Enter to close...'
+    exit 1
+fi
+
+if sudo -n {tool} -d {device} run; then
     echo '✅ IR emitter enabled!'
 else
     echo '❌ No config found — run calibration first.'
 fi
 echo ''
-{tool} -d {device} test
+sudo -n {tool} -d {device} test
 echo ''
 read -r -p 'Press Enter to close...'
 "#, tool = tool, device = ir_device);
